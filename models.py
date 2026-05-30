@@ -67,7 +67,8 @@ class ModelWrapper:
             return  # skip loading transformers model
 
         # fallback: normal transformers path
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        # self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True,)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, padding_side="left")
         _ensure_pad_token(self.tokenizer)
         with torch.no_grad():
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -226,16 +227,8 @@ class ModelWrapper:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids, device=self.device)
-        prompt_lengths = attention_mask.sum(dim=1).tolist()
-        cache_position = None
         if past_key_values is not None:
             past_len = _past_length(past_key_values)
-            cache_position = torch.arange(
-                past_len,
-                past_len + input_ids.shape[-1],
-                dtype=torch.long,
-                device=self.device,
-            )
             if past_len > 0:
                 past_mask = torch.ones(
                     (attention_mask.shape[0], past_len),
@@ -254,13 +247,12 @@ class ModelWrapper:
             return_dict_in_generate=True,
             output_scores=False,
             past_key_values=past_key_values,
-            cache_position=cache_position,
         )
         sequences = outputs.sequences
+        prompt_padded_len = input_ids.shape[1]
         generations: List[str] = []
-        for idx, length in enumerate(prompt_lengths):
-            length = int(length)
-            generated_ids = sequences[idx, length:]
+        for idx in range(sequences.shape[0]):
+            generated_ids = sequences[idx, prompt_padded_len:]
             text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
             generations.append(text)
         return generations, outputs.past_key_values
