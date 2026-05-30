@@ -79,10 +79,10 @@ class BaselineMethod:
                 pred = normalize_answer(extract_gsm8k_answer(generated_text))
                 gold = str(item.get("gold", "")).strip()
                 try:
-                    pred_int = int(pred)
+                    pred_int = int(pred) if pred is not None else None
                     gold_int = int(gold)
-                    ok = (pred_int == gold_int)
-                    error_msg = None
+                    ok = (pred_int == gold_int) if pred_int is not None else False
+                    error_msg = None if pred_int is not None else f'No answer extracted. Gold: {gold}'
                 except ValueError:
                     ok = False
                     error_msg = f'Value error in parsing answer. Pred: {pred}, Gold: {gold}'

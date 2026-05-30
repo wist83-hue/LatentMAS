@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional, Tuple
 
-from . import default_agents
+from . import default_agents, parse_pipeline
 from models import ModelWrapper, _past_length
 from prompts import build_agent_message_sequential_latent_mas, build_agent_message_hierarchical_latent_mas
 from utils import extract_gsm8k_answer, normalize_answer, extract_markdown_python_block, run_with_timeout
@@ -29,11 +29,18 @@ class LatentMASMethod:
         self.args = args
         self.model = model
         self.latent_steps = latent_steps
+        self.latent_steps_map: Dict[str, int] = {}
+        raw_map = getattr(args, "latent_steps_map", None) if args else None
+        if raw_map:
+            for pair in raw_map.split(","):
+                role, k = pair.split(":")
+                self.latent_steps_map[role.strip().lower()] = int(k)
         self.judger_max_new_tokens = judger_max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
         self.generate_bs = max(1, generate_bs)
-        self.agents = default_agents()
+        pipeline_spec = getattr(args, "pipeline", None) if args else None
+        self.agents = parse_pipeline(pipeline_spec) if pipeline_spec else default_agents()
         self.method_name = 'latent_mas'
         self.vllm_device = args.device 
         self.HF_device = args.device2
@@ -127,16 +134,17 @@ class LatentMASMethod:
                     active_ids = ids_row[mask_row.bool()].tolist()
                     wrapped_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
 
+                k_for_agent = self.latent_steps_map.get(agent.role, self.latent_steps)
                 past_kv = self.model.generate_latent_batch(
                     wrapped_ids,
                     attention_mask=wrapped_mask,
-                    latent_steps=self.latent_steps,
+                    latent_steps=k_for_agent,
                     past_key_values=past_kv,
                 )
                 if self.sequential_info_only or self.latent_only:
                     new_past_len = _past_length(past_kv)
                     tokens_added = new_past_len - prev_past_len
-                    tokens_to_keep = self.latent_steps if self.latent_only else tokens_added
+                    tokens_to_keep = k_for_agent if self.latent_only else tokens_added
                     past_kv = self._truncate_past(past_kv, tokens_to_keep)
 
                 for idx in range(batch_size):
@@ -149,7 +157,7 @@ class LatentMASMethod:
                             "input": wrapped_prompts[idx],
                             "input_ids": trimmed_ids,
                             "input_tokens": wrapped_tokens_batch[idx],
-                            "latent_steps": self.latent_steps,
+                            "latent_steps": k_for_agent,
                             "output": "",
                         }
                     )
@@ -221,10 +229,10 @@ class LatentMASMethod:
                 pred = normalize_answer(extract_gsm8k_answer(final_text))
                 gold = str(item.get("gold", "")).strip()
                 try:
-                    pred_int = int(pred)
+                    pred_int = int(pred) if pred is not None else None
                     gold_int = int(gold)
-                    ok = (pred_int == gold_int)
-                    error_msg = None
+                    ok = (pred_int == gold_int) if pred_int is not None else False
+                    error_msg = None if pred_int is not None else f'No answer extracted. Gold: {gold}'
                 except ValueError:
                     ok = False
                     error_msg = f'Value error in parsing answer. Pred: {pred}, Gold: {gold}'
@@ -297,21 +305,22 @@ class LatentMASMethod:
                     active_ids = ids_row[mask_row.bool()].tolist()
                     wrapped_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
 
+                k_for_agent = self.latent_steps_map.get(agent.role, self.latent_steps)
                 past_kv, previous_hidden_embedding = self.model.generate_latent_batch_hidden_state(
                     wrapped_ids,
                     attention_mask=wrapped_mask,
-                    latent_steps=self.latent_steps,
+                    latent_steps=k_for_agent,
                     past_key_values=past_kv,
                 )
                 if self.sequential_info_only or self.latent_only:
                     new_past_len = _past_length(past_kv)
                     tokens_added = new_past_len - prev_past_len
-                    tokens_to_keep = self.latent_steps if self.latent_only else tokens_added
+                    tokens_to_keep = k_for_agent if self.latent_only else tokens_added
                     past_kv = self._truncate_past(past_kv, tokens_to_keep)
 
                 if self.latent_only:
-                    if self.latent_steps > 0:
-                        previous_hidden_embedding = previous_hidden_embedding[:, -self.latent_steps:, :]
+                    if k_for_agent > 0:
+                        previous_hidden_embedding = previous_hidden_embedding[:, -k_for_agent:, :]
                     else:
                         previous_hidden_embedding = previous_hidden_embedding[:, 0:0, :]
 
@@ -330,7 +339,7 @@ class LatentMASMethod:
                             "input": wrapped_prompts[idx],
                             "input_ids": trimmed_ids,
                             "input_tokens": wrapped_tokens_batch[idx],
-                            "latent_steps": self.latent_steps,
+                            "latent_steps": k_for_agent,
                             "output": "",
                         }
                     )

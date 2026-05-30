@@ -309,6 +309,11 @@ class ModelWrapper:
         latent_vecs_all: List[torch.Tensor] = []
         latent_vecs_all.append(e_t.detach().clone())
 
+        halt_threshold = float(getattr(self.args, "latent_halt_threshold", 0.0) or 0.0) if self.args else 0.0
+        halt_min_steps = int(getattr(self.args, "latent_halt_min_steps", 3) or 3) if self.args else 3
+        prev_h1 = None  # hidden at step N-1
+        prev_h2 = None  # hidden at step N-2
+
         for step in range(latent_steps):
 
             source_model = self.HF_model if hasattr(self, "HF_model") else self.model
@@ -318,7 +323,7 @@ class ModelWrapper:
 
             if step == 0:
                 e_t_plus_1 = latent_vec.detach().clone()
-            
+
             latent_embed = latent_vec.unsqueeze(1)
 
             past_len = _past_length(past)
@@ -337,6 +342,15 @@ class ModelWrapper:
             )
             past = outputs.past_key_values
             last_hidden = outputs.hidden_states[-1][:, -1, :]
+
+            if halt_threshold > 0 and prev_h1 is not None and prev_h2 is not None and (step + 1) >= halt_min_steps:
+                denom = (last_hidden ** 2).sum(dim=-1).clamp_min(1e-8)
+                d1 = ((last_hidden - prev_h1) ** 2).sum(dim=-1) / denom
+                d2 = ((last_hidden - prev_h2) ** 2).sum(dim=-1) / denom
+                if torch.all((d1 < halt_threshold) & (d2 < halt_threshold)):
+                    break
+            prev_h2 = prev_h1
+            prev_h1 = last_hidden
 
         return past
     
