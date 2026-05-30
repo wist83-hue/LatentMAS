@@ -163,7 +163,8 @@ class LatentMASMethod:
                     )
             else:
 
-                past_for_decoding = past_kv if self.latent_steps > 0 else None
+                any_latent = self.latent_steps > 0 or any(v > 0 for v in self.latent_steps_map.values())
+                past_for_decoding = past_kv if any_latent else None
 
                 if self.args.think:
                         judger_prompts = [f"{prompt}<think>" for prompt in prompts]
