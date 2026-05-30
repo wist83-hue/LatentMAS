@@ -155,6 +155,12 @@ If you want **vLLM support**, also install:
 pip install vllm
 ```
 
+> **Note:** Recent versions of `datasets` (≥ 4.x) require `pyarrow ≥ 21`. If you see `AttributeError: module 'pyarrow' has no attribute 'json_'`, upgrade with:
+>
+> ```bash
+> pip install -U pyarrow
+> ```
+
 ## 🚀 Quick Start
 
 ### 1. Clone the repo
