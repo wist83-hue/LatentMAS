@@ -23,8 +23,7 @@ def _ensure_pad_token(tokenizer: AutoTokenizer) -> None:
 def _past_length(past_key_values: Optional[Tuple]) -> int:
     if not past_key_values:
         return 0
-    k = past_key_values[0][0]
-    return k.shape[-2]
+    return past_key_values.get_seq_length()
 
 
 class ModelWrapper:
