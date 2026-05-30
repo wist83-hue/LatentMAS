@@ -104,6 +104,7 @@ def main():
     parser.add_argument("--pipeline", type=str, default=None, help='Pipeline spec, e.g. "planner,(critic+refiner)*2,judger". Default: planner,critic,refiner,judger.')
     parser.add_argument("--latent_halt_threshold", type=float, default=0.0, help="Relative-squared-velocity threshold for adaptive latent-loop halting. 0 disables (uses fixed latent_steps).")
     parser.add_argument("--latent_halt_min_steps", type=int, default=3, help="Minimum latent steps before halting may trigger.")
+    parser.add_argument("--latent_halt_entropy_nats", type=float, default=0.0, help="Halt latent loop when next-token entropy (nats) of all batch elements drops below this. 0 disables. Combined with --latent_halt_threshold by OR.")
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--generate_bs", type=int, default=20, help="Batch size for generation")

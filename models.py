@@ -310,6 +310,7 @@ class ModelWrapper:
         latent_vecs_all.append(e_t.detach().clone())
 
         halt_threshold = float(getattr(self.args, "latent_halt_threshold", 0.0) or 0.0) if self.args else 0.0
+        halt_entropy = float(getattr(self.args, "latent_halt_entropy_nats", 0.0) or 0.0) if self.args else 0.0
         halt_min_steps = int(getattr(self.args, "latent_halt_min_steps", 3) or 3) if self.args else 3
         prev_h1 = None  # hidden at step N-1
         prev_h2 = None  # hidden at step N-2
@@ -343,11 +344,21 @@ class ModelWrapper:
             past = outputs.past_key_values
             last_hidden = outputs.hidden_states[-1][:, -1, :]
 
-            if halt_threshold > 0 and prev_h1 is not None and prev_h2 is not None and (step + 1) >= halt_min_steps:
-                denom = (last_hidden ** 2).sum(dim=-1).clamp_min(1e-8)
-                d1 = ((last_hidden - prev_h1) ** 2).sum(dim=-1) / denom
-                d2 = ((last_hidden - prev_h2) ** 2).sum(dim=-1) / denom
-                if torch.all((d1 < halt_threshold) & (d2 < halt_threshold)):
+            if (step + 1) >= halt_min_steps:
+                vel_halt = False
+                if halt_threshold > 0 and prev_h1 is not None and prev_h2 is not None:
+                    denom = (last_hidden ** 2).sum(dim=-1).clamp_min(1e-8)
+                    d1 = ((last_hidden - prev_h1) ** 2).sum(dim=-1) / denom
+                    d2 = ((last_hidden - prev_h2) ** 2).sum(dim=-1) / denom
+                    vel_halt = bool(torch.all((d1 < halt_threshold) & (d2 < halt_threshold)))
+                ent_halt = False
+                if halt_entropy > 0:
+                    lm_head = source_model.get_output_embeddings()
+                    logits = lm_head(last_hidden)
+                    log_probs = logits.log_softmax(dim=-1)
+                    entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
+                    ent_halt = bool(torch.all(entropy < halt_entropy))
+                if vel_halt or ent_halt:
                     break
             prev_h2 = prev_h1
             prev_h1 = last_hidden
