@@ -350,6 +350,8 @@ class ModelWrapper:
         decode_debug = bool(getattr(self.args, "latent_decode_debug", False)) if self.args else False
         feedback_mode = getattr(self.args, "latent_feedback_mode", "w_a") if self.args else "w_a"
         soft_temp = float(getattr(self.args, "latent_soft_embed_temperature", 1.0) or 1.0) if self.args else 1.0
+        halt_on_eos = bool(getattr(self.args, "latent_halt_on_eos", False)) if self.args else False
+        eos_id = getattr(self.tokenizer, "eos_token_id", None) if halt_on_eos else None
 
         for step in range(latent_steps):
 
@@ -434,16 +436,18 @@ class ModelWrapper:
                 ent_halt = False
                 arg_halt = False
                 kl_halt = False
-                need_logits = halt_entropy > 0 or halt_argmax_steps > 0 or halt_kl > 0
+                eos_halt = False
+                need_logits = (halt_entropy > 0 or halt_argmax_steps > 0
+                               or halt_kl > 0 or (halt_on_eos and eos_id is not None))
                 if need_logits:
                     lm_head = source_model.get_output_embeddings()
                     logits = lm_head(last_hidden)
                     log_probs = logits.log_softmax(dim=-1)
+                    cur_argmax = log_probs.argmax(dim=-1) if (halt_argmax_steps > 0 or halt_on_eos) else None
                     if halt_entropy > 0:
                         entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
                         ent_halt = bool(torch.all(entropy < halt_entropy))
                     if halt_argmax_steps > 0:
-                        cur_argmax = log_probs.argmax(dim=-1)
                         if prev_argmax is not None and bool(torch.all(cur_argmax == prev_argmax)):
                             argmax_run_len += 1
                         else:
@@ -455,7 +459,14 @@ class ModelWrapper:
                         kl_halt = bool(torch.all(kl < halt_kl))
                     if halt_kl > 0:
                         prev_log_probs = log_probs
-                if vel_halt or ent_halt or arg_halt or kl_halt:
+                    if halt_on_eos and eos_id is not None:
+                        # Tokenizer may return a single int or a list; normalize.
+                        eos_ids = eos_id if isinstance(eos_id, (list, tuple)) else [eos_id]
+                        eos_mask = torch.zeros_like(cur_argmax, dtype=torch.bool)
+                        for e in eos_ids:
+                            eos_mask |= (cur_argmax == e)
+                        eos_halt = bool(torch.all(eos_mask))
+                if vel_halt or ent_halt or arg_halt or kl_halt or eos_halt:
                     break
             prev_h2 = prev_h1
             prev_h1 = last_hidden

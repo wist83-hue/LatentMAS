@@ -106,6 +106,15 @@ def main():
     parser.add_argument("--latent_halt_entropy_nats", type=float, default=0.0, help="Halt latent loop when next-token entropy (nats) of all batch elements drops below this. 0 disables. Combined with --latent_halt_threshold by OR.")
     parser.add_argument("--latent_halt_argmax_steps", type=int, default=0, help="Halt latent loop when argmax(logits) is the same token for N consecutive steps for all batch elements. 0 disables.")
     parser.add_argument("--latent_halt_kl_nats", type=float, default=0.0, help="Halt latent loop when KL(p_N || p_{N-1}) drops below this (nats) for all batch elements. 0 disables.")
+    parser.add_argument(
+        "--latent_halt_on_eos",
+        action="store_true",
+        help=(
+            "Halt latent loop when argmax(lm_head(hidden)) equals the tokenizer's EOS id "
+            "for all batch elements. Mirrors how text generation naturally stops; closes the "
+            "argmax_embed vs text_mas_short equivalence gap. Combined with other halts by OR."
+        ),
+    )
     parser.add_argument("--inter_persona_anchor_tokens", type=int, default=0, help="After each non-judger persona's latent loop, emit this many text tokens (greedy) as a manifold anchor between iterations. 0 disables.")
     parser.add_argument(
         "--latent_ablation",
