@@ -245,6 +245,7 @@ class ModelWrapper:
         temperature: float = 0.7,
         top_p: float = 0.95,
         past_key_values: Optional[Tuple] = None,
+        do_sample: bool = True,
     ) -> Tuple[List[str], Optional[Tuple]]:
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
@@ -259,18 +260,21 @@ class ModelWrapper:
                     device=attention_mask.device,
                 )
                 attention_mask = torch.cat([past_mask, attention_mask], dim=-1)
-        outputs = self.model.generate(
+        gen_kwargs = dict(
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            do_sample=True,
+            do_sample=do_sample,
             pad_token_id=self.tokenizer.pad_token_id,
             return_dict_in_generate=True,
             output_scores=False,
             past_key_values=past_key_values,
         )
+        # Only pass sampling kwargs when sampling; HF warns otherwise.
+        if do_sample:
+            gen_kwargs["temperature"] = temperature
+            gen_kwargs["top_p"] = top_p
+        outputs = self.model.generate(**gen_kwargs)
         sequences = outputs.sequences
         prompt_padded_len = input_ids.shape[1]
         generations: List[str] = []

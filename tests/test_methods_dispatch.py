@@ -105,6 +105,29 @@ class TestLatentMasRunBatchParallel:
                 )
 
 
+class TestTextMasShortCap:
+    def test_short_cap_runs_end_to_end(self, tiny_args, tiny_model_wrapper):
+        """text_mas with --text_mas_nonjudger_max_tokens=8 should run cleanly."""
+        from methods.text_mas import TextMASMethod
+        args = copy.copy(tiny_args)
+        args.method = "text_mas"
+        args.task = "gsm8k"
+        args.text_mas_nonjudger_max_tokens = 8  # short non-judger cap
+        method = TextMASMethod(
+            tiny_model_wrapper, max_new_tokens_each=64, generate_bs=2, args=args,
+        )
+        results = method.run_batch(_items())
+        assert len(results) == 2
+        # Each result has 4 agents (planner, critic, refiner, judger)
+        for r in results:
+            assert len(r["agents"]) == 4
+            # Non-judger outputs should be short; judger long
+            non_judger_outputs = [a["output"] for a in r["agents"] if a["role"] != "judger"]
+            for out in non_judger_outputs:
+                # 8 tokens is roughly <= 60 characters even for verbose models
+                assert len(out) < 200, f"non-judger output too long: {len(out)} chars"
+
+
 class TestLatentMasAnchor:
     def test_anchor_emits_text(self, tiny_args, tiny_model_wrapper):
         from methods.latent_mas import LatentMASMethod

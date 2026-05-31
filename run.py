@@ -152,6 +152,18 @@ def main():
     parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--generate_bs", type=int, default=20, help="Batch size for generation")
     parser.add_argument("--text_mas_context_length", type=int, default=-1, help="TextMAS context length limit")
+    parser.add_argument(
+        "--text_mas_nonjudger_max_tokens",
+        type=int,
+        default=0,
+        help=(
+            "Cap each non-judger agent's textual output at this many tokens "
+            "(judger keeps --max_new_tokens). 0 disables (default = use --max_new_tokens "
+            "for all agents). Generation is greedy when this is set; EOS still stops early. "
+            "Used to compare against latent_mas argmax_embed: short greedy text reasoning "
+            "and argmax_embed-K=N produce identical KV cache state."
+        ),
+    )
     parser.add_argument("--think", action="store_true", help="Manually add think token in the prompt for LatentMAS")
     # The paper's central method depends on the ridge-regressed W_a matrix
     # mapping output hidden space -> input embedding space. Default ON so

@@ -68,10 +68,21 @@ class TextMASMethod:
                 batch_messages, add_generation_prompt=True
             )
 
+            # Optional per-agent short cap for non-judger agents (for direct
+            # comparison with latent_mas argmax_embed at the same K). Greedy
+            # to match argmax_embed's argmax behavior.
+            short_cap = int(getattr(self.args, "text_mas_nonjudger_max_tokens", 0) or 0)
+            if short_cap > 0 and agent.role != "judger":
+                cap = short_cap
+                use_greedy = True
+            else:
+                cap = self.max_new_tokens_each
+                use_greedy = False
+
             if self.model.use_vllm:
                 generated_texts = self.model.vllm_generate_text_batch(
                     prompts,
-                    max_new_tokens=self.max_new_tokens_each,
+                    max_new_tokens=cap,
                     temperature=self.temperature,
                     top_p=self.top_p,
                 )
@@ -79,9 +90,10 @@ class TextMASMethod:
                 generated_texts, _ = self.model.generate_text_batch(
                     input_ids,
                     attention_mask,
-                    max_new_tokens=self.max_new_tokens_each,
+                    max_new_tokens=cap,
                     temperature=self.temperature,
                     top_p=self.top_p,
+                    do_sample=not use_greedy,
                 )
 
             agent_name_map_for_prompt_hierarchical = {
