@@ -66,6 +66,8 @@ def tiny_args():
         top_p=0.95,
         text_mas_context_length=-1,
         latent_norm_mode="preserve",
+        latent_ablation="none",
+        latent_decode_debug=False,
     )
 
 

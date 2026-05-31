@@ -342,11 +342,42 @@ class ModelWrapper:
         prev_argmax = None
         argmax_run_len = 0
         prev_log_probs = None
+        ablation = getattr(self.args, "latent_ablation", "none") if self.args else "none"
+        decode_debug = bool(getattr(self.args, "latent_decode_debug", False)) if self.args else False
 
         for step in range(latent_steps):
 
             source_model = self.HF_model if hasattr(self, "HF_model") else self.model
             latent_vec = self._apply_latent_realignment(last_hidden, source_model)
+
+            if ablation == "zero":
+                latent_vec = torch.zeros_like(latent_vec)
+            elif ablation == "shuffle":
+                # Permute across batch dim: each example gets a different
+                # example's latent vector. Preserves the magnitude/direction
+                # distribution but breaks the per-example signal.
+                perm = torch.randperm(latent_vec.shape[0], device=latent_vec.device)
+                latent_vec = latent_vec[perm]
+            elif ablation == "gaussian":
+                # Random direction, per-row matched magnitude.
+                target = latent_vec.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
+                g = torch.randn_like(latent_vec)
+                latent_vec = g * (target / g.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS))
+
+            if decode_debug:
+                # Project this latent vector through lm_head and report the top-5
+                # tokens. Makes drift visible: domain words early, noise later.
+                lm_head = source_model.get_output_embeddings()
+                with torch.no_grad():
+                    logits = lm_head(latent_vec)
+                    topk = logits.topk(5, dim=-1).indices  # [B, 5]
+                # Decode per batch element
+                tok = getattr(self, "tokenizer", None)
+                if tok is not None:
+                    rows = [tok.convert_ids_to_tokens(topk[i].tolist()) for i in range(topk.shape[0])]
+                    print(f"[latent-decode] step={step+1} top5={rows}", flush=True)
+                else:
+                    print(f"[latent-decode] step={step+1} topk_ids={topk.tolist()}", flush=True)
 
             latent_vecs_all.append(latent_vec.detach().clone())
             latent_embed = latent_vec.unsqueeze(1)

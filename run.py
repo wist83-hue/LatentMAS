@@ -107,6 +107,26 @@ def main():
     parser.add_argument("--latent_halt_argmax_steps", type=int, default=0, help="Halt latent loop when argmax(logits) is the same token for N consecutive steps for all batch elements. 0 disables.")
     parser.add_argument("--latent_halt_kl_nats", type=float, default=0.0, help="Halt latent loop when KL(p_N || p_{N-1}) drops below this (nats) for all batch elements. 0 disables.")
     parser.add_argument("--inter_persona_anchor_tokens", type=int, default=0, help="After each non-judger persona's latent loop, emit this many text tokens (greedy) as a manifold anchor between iterations. 0 disables.")
+    parser.add_argument(
+        "--latent_ablation",
+        choices=["none", "zero", "shuffle", "gaussian"],
+        default="none",
+        help=(
+            "Diagnostic: replace each latent vector before injection. "
+            "'none' (default): no change. "
+            "'zero': inject zeros (tests 'is any signal needed?'). "
+            "'shuffle': permute latent vectors across the batch (tests "
+            "'is the per-example signal needed, or any latent-shaped vector?'). "
+            "'gaussian': random vectors with matching per-row magnitude (tests "
+            "'is the specific direction needed?'). If accuracy is unchanged "
+            "under all three, the latent path is noise the judger routes around."
+        ),
+    )
+    parser.add_argument(
+        "--latent_decode_debug",
+        action="store_true",
+        help="Per latent step, log the top-5 argmax tokens of lm_head(latent_vec) to stdout. Makes drift visible.",
+    )
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--generate_bs", type=int, default=20, help="Batch size for generation")
