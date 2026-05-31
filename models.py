@@ -272,6 +272,7 @@ class ModelWrapper:
         *,
         latent_steps: int,
         past_key_values: Optional[Tuple] = None,
+        return_latent_vecs: bool = False,
     ) -> Tuple:
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
@@ -311,9 +312,14 @@ class ModelWrapper:
 
         halt_threshold = float(getattr(self.args, "latent_halt_threshold", 0.0) or 0.0) if self.args else 0.0
         halt_entropy = float(getattr(self.args, "latent_halt_entropy_nats", 0.0) or 0.0) if self.args else 0.0
+        halt_argmax_steps = int(getattr(self.args, "latent_halt_argmax_steps", 0) or 0) if self.args else 0
+        halt_kl = float(getattr(self.args, "latent_halt_kl_nats", 0.0) or 0.0) if self.args else 0.0
         halt_min_steps = int(getattr(self.args, "latent_halt_min_steps", 3) or 3) if self.args else 3
         prev_h1 = None  # hidden at step N-1
         prev_h2 = None  # hidden at step N-2
+        prev_argmax = None
+        argmax_run_len = 0
+        prev_log_probs = None
 
         for step in range(latent_steps):
 
@@ -352,19 +358,83 @@ class ModelWrapper:
                     d2 = ((last_hidden - prev_h2) ** 2).sum(dim=-1) / denom
                     vel_halt = bool(torch.all((d1 < halt_threshold) & (d2 < halt_threshold)))
                 ent_halt = False
-                if halt_entropy > 0:
+                arg_halt = False
+                kl_halt = False
+                need_logits = halt_entropy > 0 or halt_argmax_steps > 0 or halt_kl > 0
+                if need_logits:
                     lm_head = source_model.get_output_embeddings()
                     logits = lm_head(last_hidden)
                     log_probs = logits.log_softmax(dim=-1)
-                    entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
-                    ent_halt = bool(torch.all(entropy < halt_entropy))
-                if vel_halt or ent_halt:
+                    if halt_entropy > 0:
+                        entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
+                        ent_halt = bool(torch.all(entropy < halt_entropy))
+                    if halt_argmax_steps > 0:
+                        cur_argmax = log_probs.argmax(dim=-1)
+                        if prev_argmax is not None and bool(torch.all(cur_argmax == prev_argmax)):
+                            argmax_run_len += 1
+                        else:
+                            argmax_run_len = 1
+                        prev_argmax = cur_argmax
+                        arg_halt = argmax_run_len >= halt_argmax_steps
+                    if halt_kl > 0 and prev_log_probs is not None:
+                        kl = (log_probs.exp() * (log_probs - prev_log_probs)).sum(dim=-1)
+                        kl_halt = bool(torch.all(kl < halt_kl))
+                    if halt_kl > 0:
+                        prev_log_probs = log_probs
+                if vel_halt or ent_halt or arg_halt or kl_halt:
                     break
             prev_h2 = prev_h1
             prev_h1 = last_hidden
 
+        if return_latent_vecs:
+            if len(latent_vecs_all) > 1:
+                latent_vecs_tensor = torch.stack(latent_vecs_all[1:], dim=1)
+            else:
+                latent_vecs_tensor = torch.zeros(
+                    (input_ids.shape[0], 0, last_hidden.shape[-1]),
+                    dtype=last_hidden.dtype, device=last_hidden.device,
+                )
+            return past, latent_vecs_tensor
         return past
-    
+
+    @torch.no_grad()
+    def stitch_and_prefill(
+        self,
+        past_key_values: Optional[Tuple],
+        branch_data: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    ) -> Tuple:
+        """Concatenate [prompt_embeds_i, latent_vecs_i] for each branch and prefill via one forward pass.
+
+        branch_data: list of (prompt_embeds [B,P,D], prompt_mask [B,P], latent_vecs [B,K,D]).
+        Returns extended past_key_values with stitched content at correct RoPE positions.
+        """
+        B = branch_data[0][0].shape[0]
+        device = branch_data[0][0].device
+        chunks: List[torch.Tensor] = []
+        mask_chunks: List[torch.Tensor] = []
+        for prompt_embeds, prompt_mask, latent_vecs in branch_data:
+            chunks.append(prompt_embeds)
+            chunks.append(latent_vecs)
+            K = latent_vecs.shape[1]
+            mask_chunks.append(prompt_mask.to(device=device, dtype=torch.long))
+            mask_chunks.append(torch.ones((B, K), dtype=torch.long, device=device))
+        full_embeds = torch.cat(chunks, dim=1)
+        full_new_mask = torch.cat(mask_chunks, dim=1)
+        past_len = _past_length(past_key_values)
+        if past_len > 0:
+            past_mask = torch.ones((B, past_len), dtype=torch.long, device=device)
+            full_mask = torch.cat([past_mask, full_new_mask], dim=-1)
+        else:
+            full_mask = full_new_mask
+        outputs = self.model(
+            inputs_embeds=full_embeds,
+            attention_mask=full_mask,
+            past_key_values=past_key_values,
+            use_cache=True,
+            return_dict=True,
+        )
+        return outputs.past_key_values
+
     @torch.no_grad()
     def generate_latent_batch_hidden_state(
         self,

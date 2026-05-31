@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional, Tuple
 
-from . import default_agents, parse_pipeline
+from . import default_agents, parse_pipeline, Agent, Parallel
 from models import ModelWrapper, _past_length
 from prompts import build_agent_message_sequential_latent_mas, build_agent_message_hierarchical_latent_mas
 from utils import extract_gsm8k_answer, normalize_answer, extract_markdown_python_block, run_with_timeout
@@ -57,6 +57,19 @@ class LatentMASMethod:
         )
         self.task = args.task
 
+    def _copy_past_kv(self, past_kv: Optional[Tuple]) -> Optional[Tuple]:
+        """Deep-copy a DynamicCache so an isolated branch run can't mutate the parent state."""
+        if past_kv is None:
+            return None
+        if Cache is not None and isinstance(past_kv, Cache):
+            legacy = past_kv.to_legacy_cache()
+            copied_legacy = tuple(
+                tuple(t.clone() for t in layer)
+                for layer in legacy
+            )
+            return past_kv.__class__.from_legacy_cache(copied_legacy)
+        return past_kv
+
     @staticmethod
     def _slice_tensor(tensor: torch.Tensor, tokens_to_keep: int) -> torch.Tensor:
         if tokens_to_keep <= 0:
@@ -95,8 +108,39 @@ class LatentMASMethod:
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
 
-        for agent in self.agents:
+        for op in self.agents:
 
+            if isinstance(op, Parallel):
+                snapshot = self._copy_past_kv(past_kv)
+                branch_data = []
+                embed_layer = self.model.model.get_input_embeddings()
+                for branch in op.branches:
+                    if len(branch) != 1:
+                        raise NotImplementedError("parallel branches with >1 agent not yet supported")
+                    ba = branch[0]
+                    if self.args.prompt == "sequential":
+                        bmsgs = [build_agent_message_sequential_latent_mas(role=ba.role, question=it["question"], context="", method=self.method_name, args=self.args) for it in items]
+                    else:
+                        bmsgs = [build_agent_message_hierarchical_latent_mas(role=ba.role, question=it["question"], context="", method=self.method_name, args=self.args) for it in items]
+                    _, b_ids, b_mask, _ = self.model.prepare_chat_batch(bmsgs, add_generation_prompt=True)
+                    snap_copy = self._copy_past_kv(snapshot)
+                    k_branch = self.latent_steps_map.get(ba.role, self.latent_steps)
+                    _, latent_vecs = self.model.generate_latent_batch(
+                        b_ids, attention_mask=b_mask,
+                        latent_steps=k_branch, past_key_values=snap_copy,
+                        return_latent_vecs=True,
+                    )
+                    prompt_embeds = embed_layer(b_ids)
+                    branch_data.append((prompt_embeds, b_mask, latent_vecs))
+                    for idx in range(batch_size):
+                        agent_traces[idx].append({
+                            "name": ba.name, "role": ba.role, "branch": True,
+                            "input": bmsgs[idx], "latent_steps": k_branch, "output": "",
+                        })
+                past_kv = self.model.stitch_and_prefill(snapshot, branch_data)
+                continue
+
+            agent = op
             if self.args.prompt == "sequential":
                 batch_messages = [
                     build_agent_message_sequential_latent_mas(role=agent.role, question=item["question"], context="", method=self.method_name, args=self.args)
@@ -147,6 +191,20 @@ class LatentMASMethod:
                     tokens_to_keep = k_for_agent if self.latent_only else tokens_added
                     past_kv = self._truncate_past(past_kv, tokens_to_keep)
 
+                anchor_tokens = int(getattr(self.args, "inter_persona_anchor_tokens", 0) or 0)
+                anchor_texts = ["" for _ in range(batch_size)]
+                if anchor_tokens > 0 and past_kv is not None:
+                    seed_ids = wrapped_ids[:, -1:]
+                    seed_mask = torch.ones_like(seed_ids)
+                    anchor_texts, past_kv = self.model.generate_text_batch(
+                        seed_ids,
+                        attention_mask=seed_mask,
+                        max_new_tokens=anchor_tokens,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                        past_key_values=past_kv,
+                    )
+
                 for idx in range(batch_size):
                     mask = wrapped_mask[idx].bool()
                     trimmed_ids = wrapped_ids[idx][mask].to("cpu").tolist()
@@ -158,7 +216,7 @@ class LatentMASMethod:
                             "input_ids": trimmed_ids,
                             "input_tokens": wrapped_tokens_batch[idx],
                             "latent_steps": k_for_agent,
-                            "output": "",
+                            "output": anchor_texts[idx],
                         }
                     )
             else:
