@@ -110,6 +110,57 @@ class TestDecodeDebug:
         assert "step=3" in captured
 
 
+class TestOodDebug:
+    def test_ood_debug_prints_per_step_and_reference(self, tiny_model_wrapper, tiny_args, capsys):
+        mw = tiny_model_wrapper
+        # Clear any cached reference from a prior test
+        if hasattr(mw, "_ood_ref_l2"):
+            del mw._ood_ref_l2
+        args = copy.copy(tiny_args)
+        args.latent_ood_debug = True
+        mw.args = args
+        ids, mask = _ids_mask(mw)
+        mw.generate_latent_batch(ids, attention_mask=mask, latent_steps=2)
+        captured = capsys.readouterr().out
+        # One reference line + two [ood] lines per step (nn line + decode line) × 2 steps = 4
+        assert "[ood] reference:" in captured
+        # Each step produces two [ood] lines (nn metrics + decode metrics)
+        assert captured.count("nn_l2=") == 2
+        assert captured.count("decode_l2=") == 2
+
+    def test_ood_reference_cached(self, tiny_model_wrapper, tiny_args):
+        mw = tiny_model_wrapper
+        if hasattr(mw, "_ood_ref_l2"):
+            del mw._ood_ref_l2
+        # First call computes and caches
+        mw._maybe_compute_ood_reference(mw.model)
+        first = mw._ood_ref_l2
+        assert first is not None
+        # Second call is a no-op (cached value unchanged)
+        mw._maybe_compute_ood_reference(mw.model)
+        assert mw._ood_ref_l2 == first
+
+    def test_argmax_embed_has_tiny_nn_distance(self, tiny_model_wrapper, tiny_args, capsys):
+        """argmax_embed feeds back a real E_in row, so NN distance should be ~0."""
+        mw = tiny_model_wrapper
+        if hasattr(mw, "_ood_ref_l2"):
+            del mw._ood_ref_l2
+        args = copy.copy(tiny_args)
+        args.latent_ood_debug = True
+        args.latent_feedback_mode = "argmax_embed"
+        mw.args = args
+        ids, mask = _ids_mask(mw)
+        mw.generate_latent_batch(ids, attention_mask=mask, latent_steps=1)
+        captured = capsys.readouterr().out
+        # Pull out the nn_l2 value from the first [ood] line
+        import re
+        m = re.search(r"nn_l2=([\d.]+)", captured)
+        assert m is not None
+        nn_l2 = float(m.group(1))
+        # argmax_embed feeds back a real E_in row, so NN distance is ~0 (it IS one)
+        assert nn_l2 < 0.01, f"argmax_embed should have ~0 NN distance, got {nn_l2}"
+
+
 def vecs_not_identical(a: torch.Tensor, b: torch.Tensor, atol: float = 1e-6) -> bool:
     """Helper: return True if a and b differ noticeably anywhere."""
     return not torch.allclose(a, b, atol=atol)

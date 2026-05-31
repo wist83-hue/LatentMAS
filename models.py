@@ -202,6 +202,36 @@ class ModelWrapper:
 
         return matrix, target_norm
 
+    def _maybe_compute_ood_reference(self, model) -> None:
+        """Lazy-init the reference NN distance between real E_in rows.
+
+        Used by --latent_ood_debug to give a baseline against which to compare
+        the fed-back latent vector's NN distance.
+        """
+        if getattr(self, "_ood_ref_l2", None) is not None:
+            return
+        emb = model.get_input_embeddings().weight.detach().to(torch.float32)
+        V = emb.shape[0]
+        # Precompute squared row norms (used in every per-step OOD check too)
+        self._ood_emb_sq_norms = (emb ** 2).sum(dim=-1)  # [V]
+        n = min(64, V)
+        idx = torch.randperm(V, generator=torch.Generator().manual_seed(0))[:n].to(emb.device)
+        sample = emb[idx]  # [n, D]
+        # cdist might OOM at V=152K * n=64; manage with batched dot products
+        s_sq = (sample ** 2).sum(dim=-1, keepdim=True)
+        inner = sample @ emb.T  # [n, V]
+        d_sq = (s_sq + self._ood_emb_sq_norms.unsqueeze(0) - 2 * inner).clamp_min(0)
+        # Mask self-distance (sample row k maps to emb row idx[k]; that's 0)
+        for k in range(n):
+            d_sq[k, idx[k]] = float("inf")
+        nn_l2 = d_sq.sqrt().min(dim=-1).values
+        self._ood_ref_l2 = nn_l2.mean().item()
+        print(
+            f"[ood] reference: mean nearest-neighbor L2 distance between real E_in rows "
+            f"= {self._ood_ref_l2:.3f} (sampled n={n} of V={V})",
+            flush=True,
+        )
+
     def _apply_latent_realignment(self, hidden: torch.Tensor, model: torch.nn.Module) -> torch.Tensor:
         matrix, target_norm = self._ensure_latent_realign_matrix(model, hidden.device, self.args)
         hidden_fp32 = hidden.to(torch.float32)
@@ -348,6 +378,7 @@ class ModelWrapper:
         prev_log_probs = None
         ablation = getattr(self.args, "latent_ablation", "none") if self.args else "none"
         decode_debug = bool(getattr(self.args, "latent_decode_debug", False)) if self.args else False
+        ood_debug = bool(getattr(self.args, "latent_ood_debug", False)) if self.args else False
         feedback_mode = getattr(self.args, "latent_feedback_mode", "w_a") if self.args else "w_a"
         soft_temp = float(getattr(self.args, "latent_soft_embed_temperature", 1.0) or 1.0) if self.args else 1.0
         halt_on_eos = bool(getattr(self.args, "latent_halt_on_eos", False)) if self.args else False
@@ -396,13 +427,48 @@ class ModelWrapper:
                 with torch.no_grad():
                     logits = lm_head(latent_vec)
                     topk = logits.topk(5, dim=-1).indices  # [B, 5]
-                # Decode per batch element
                 tok = getattr(self, "tokenizer", None)
                 if tok is not None:
                     rows = [tok.convert_ids_to_tokens(topk[i].tolist()) for i in range(topk.shape[0])]
                     print(f"[latent-decode] step={step+1} top5={rows}", flush=True)
                 else:
                     print(f"[latent-decode] step={step+1} topk_ids={topk.tolist()}", flush=True)
+
+            if ood_debug:
+                self._maybe_compute_ood_reference(source_model)
+                lm_head = source_model.get_output_embeddings()
+                emb = source_model.get_input_embeddings()
+                with torch.no_grad():
+                    v = latent_vec.detach().to(torch.float32)
+                    emb_w = emb.weight.detach().to(torch.float32)
+                    # Nearest-neighbor in E_in
+                    v_sq = (v ** 2).sum(dim=-1, keepdim=True)
+                    inner = v @ emb_w.T
+                    d_sq = (v_sq + self._ood_emb_sq_norms - 2 * inner).clamp_min(0)
+                    nn_l2 = d_sq.sqrt().min(dim=-1).values  # [B]
+                    v_unit = v / v.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
+                    emb_unit = emb_w / emb_w.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
+                    nn_cos = 1.0 - (v_unit @ emb_unit.T).max(dim=-1).values  # [B]
+                    # Decode-and-check: what token would the model emit next?
+                    pre_logits = lm_head(last_hidden)
+                    pred_id = pre_logits.argmax(dim=-1)  # [B]
+                    target = emb_w[pred_id]
+                    dec_l2 = (v - target).norm(dim=-1)
+                    target_unit = target / target.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
+                    dec_cos = 1.0 - (v_unit * target_unit).sum(dim=-1)
+                tok_obj = getattr(self, "tokenizer", None)
+                pred_str = tok_obj.convert_ids_to_tokens([pred_id[0].item()])[0] if tok_obj is not None else str(pred_id[0].item())
+                print(
+                    f"[ood] step={step+1} nn_l2={nn_l2.mean().item():.3f} "
+                    f"(ref={self._ood_ref_l2:.3f}, ratio={nn_l2.mean().item() / max(self._ood_ref_l2, 1e-6):.2f}x) "
+                    f"nn_cos={nn_cos.mean().item():.4f}",
+                    flush=True,
+                )
+                print(
+                    f"[ood] step={step+1} pred='{pred_str}' decode_l2={dec_l2.mean().item():.3f} "
+                    f"decode_cos={dec_cos.mean().item():.4f}",
+                    flush=True,
+                )
 
             latent_vecs_all.append(latent_vec.detach().clone())
             latent_embed = latent_vec.unsqueeze(1)

@@ -137,6 +137,17 @@ def main():
         help="Per latent step, log the top-5 argmax tokens of lm_head(latent_vec) to stdout. Makes drift visible.",
     )
     parser.add_argument(
+        "--latent_ood_debug",
+        action="store_true",
+        help=(
+            "Per latent step, log two OOD metrics for the fed-back vector: "
+            "(1) nearest-neighbor L2 / cosine distance to any input embedding row, "
+            "compared to a reference distance computed once at startup from real "
+            "E_in rows; (2) distance to E_in[argmax(lm_head(pre-W_a hidden))] — "
+            "the input embedding of the token the model would emit next."
+        ),
+    )
+    parser.add_argument(
         "--latent_feedback_mode",
         choices=["w_a", "argmax_embed", "soft_embed", "coconut"],
         default="w_a",
