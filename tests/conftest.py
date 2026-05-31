@@ -68,6 +68,8 @@ def tiny_args():
         latent_norm_mode="preserve",
         latent_ablation="none",
         latent_decode_debug=False,
+        latent_feedback_mode="w_a",
+        latent_soft_embed_temperature=1.0,
     )
 
 

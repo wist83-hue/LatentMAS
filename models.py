@@ -344,11 +344,30 @@ class ModelWrapper:
         prev_log_probs = None
         ablation = getattr(self.args, "latent_ablation", "none") if self.args else "none"
         decode_debug = bool(getattr(self.args, "latent_decode_debug", False)) if self.args else False
+        feedback_mode = getattr(self.args, "latent_feedback_mode", "w_a") if self.args else "w_a"
+        soft_temp = float(getattr(self.args, "latent_soft_embed_temperature", 1.0) or 1.0) if self.args else 1.0
 
         for step in range(latent_steps):
 
             source_model = self.HF_model if hasattr(self, "HF_model") else self.model
-            latent_vec = self._apply_latent_realignment(last_hidden, source_model)
+            if feedback_mode == "w_a":
+                latent_vec = self._apply_latent_realignment(last_hidden, source_model)
+            elif feedback_mode == "coconut":
+                latent_vec = last_hidden
+            elif feedback_mode == "argmax_embed":
+                lm_head = source_model.get_output_embeddings()
+                emb = source_model.get_input_embeddings()
+                logits = lm_head(last_hidden)
+                next_id = logits.argmax(dim=-1)  # [B]
+                latent_vec = emb(next_id)        # [B, D] - real input embedding
+            elif feedback_mode == "soft_embed":
+                lm_head = source_model.get_output_embeddings()
+                emb_w = source_model.get_input_embeddings().weight  # [V, D]
+                logits = lm_head(last_hidden)
+                probs = (logits / soft_temp).softmax(dim=-1)         # [B, V]
+                latent_vec = probs.to(emb_w.dtype) @ emb_w           # [B, D]
+            else:
+                raise ValueError(f"unknown latent_feedback_mode: {feedback_mode!r}")
 
             if ablation == "zero":
                 latent_vec = torch.zeros_like(latent_vec)
