@@ -36,6 +36,49 @@ def extract_gsm8k_answer(text: str) -> Optional[str]:
     return None
 
 
+def extract_boxed_only(text: str) -> Optional[str]:
+    """Strict variant: returns the contents of the LAST \\boxed{} or None.
+
+    Intended for AIME-style tasks where small-integer answers often appear in
+    intermediate reasoning; falling back to "last number" produces frequent
+    false positives.
+    """
+    boxes = re.findall(r"\\boxed\{([^}]*)\}", text)
+    if not boxes:
+        return None
+    content = boxes[-1]
+    number = re.search(r"[-+]?\d+(?:\.\d+)?", content)
+    return number.group(0) if number else content.strip()
+
+
+def score_aime(pred_text: Optional[str], gold: str):
+    """Return (ok: bool, pred_norm: Optional[str], error_msg: Optional[str]) for AIME-style tasks.
+
+    Uses extract_boxed_only (no fallback). Compares as integers.
+    Centralizes logic previously duplicated across baseline/text_mas/latent_mas.
+    """
+    pred = normalize_answer(extract_boxed_only(pred_text or ""))
+    gold_s = str(gold or "").strip()
+    if pred is None:
+        return False, None, f"No \\boxed{{}} answer found. Gold: {gold_s}"
+    try:
+        return (int(pred) == int(gold_s)), pred, None
+    except (ValueError, TypeError):
+        return False, pred, f"Could not parse as int. Pred: {pred}, Gold: {gold_s}"
+
+
+def score_gsm8k(pred_text: Optional[str], gold: str):
+    """Return (ok, pred_norm, error_msg) for GSM8K-style tasks.
+
+    Uses extract_gsm8k_answer (boxed preferred, falls back to last number).
+    Centralized for consistency.
+    """
+    pred = normalize_answer(extract_gsm8k_answer(pred_text or ""))
+    gold_s = normalize_answer(gold)
+    ok = (pred == gold_s) if (pred and gold_s) else False
+    return ok, pred, None
+
+
 def extract_gold(text: str) -> Optional[str]:
     match = re.search(r"####\s*([-+]?\d+(?:\.\d+)?)", text)
     return match.group(1) if match else None

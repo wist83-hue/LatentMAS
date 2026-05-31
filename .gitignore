@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+
+# Local HF cache (set HF_HOME=./huggingface to use it)
+huggingface/
+
+# Claude session metadata
+.claude/
+
+# Local env
+.env
+.venv/
+venv/
+
+# OS
+.DS_Store

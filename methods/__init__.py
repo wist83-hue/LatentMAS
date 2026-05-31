@@ -24,10 +24,19 @@ _DEFAULT_NAMES = {
     "judger": "Judger",
 }
 
+# Closed set: each role must have a prompt template in prompts.py. Adding a
+# new role requires extending build_agent_message_sequential_latent_mas etc.
+KNOWN_ROLES = frozenset(_DEFAULT_NAMES.keys())
+
 
 def _make_agent(role: str) -> Agent:
     role = role.strip().lower()
-    return Agent(name=_DEFAULT_NAMES.get(role, role.capitalize()), role=role)
+    if role not in KNOWN_ROLES:
+        raise ValueError(
+            f"Unknown agent role '{role}'. Known roles: {sorted(KNOWN_ROLES)}. "
+            f"To add a new role, also add a prompt branch in prompts.py."
+        )
+    return Agent(name=_DEFAULT_NAMES[role], role=role)
 
 
 def _split_top_level(spec: str, sep: str) -> List[str]:

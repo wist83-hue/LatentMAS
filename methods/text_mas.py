@@ -4,9 +4,8 @@ from . import default_agents
 from models import ModelWrapper
 # from prompts import build_agent_messages, build_agent_messages_v6, build_agent_messages_v6_text_mas
 from prompts import build_agent_messages_hierarchical_text_mas, build_agent_messages_sequential_text_mas
-from utils import extract_gsm8k_answer, normalize_answer, extract_markdown_python_block, run_with_timeout
+from utils import score_gsm8k, score_aime, extract_markdown_python_block, run_with_timeout
 import argparse
-import pdb
 
 class TextMASMethod:
     def __init__(
@@ -123,7 +122,6 @@ class TextMASMethod:
                         "output": text_out,
                     }
                 )
-            # import pdb; pdb.set_trace()
 
         results: List[Dict] = []
         for idx, item in enumerate(items):
@@ -145,22 +143,12 @@ class TextMASMethod:
                 print(f'error_msg: {error_msg}')
 
             elif self.task in ["aime2024", "aime2025"]:
-                pred = normalize_answer(extract_gsm8k_answer(final_text))
                 gold = str(item.get("gold", "")).strip()
-                try:
-                    pred_int = int(pred) if pred is not None else None
-                    gold_int = int(gold)
-                    ok = (pred_int == gold_int) if pred_int is not None else False
-                    error_msg = None if pred_int is not None else f'No answer extracted. Gold: {gold}'
-                except ValueError:
-                    ok = False
-                    error_msg = f'Value error in parsing answer. Pred: {pred}, Gold: {gold}'
+                ok, pred, error_msg = score_aime(final_text, gold)
 
             else:
-                pred = normalize_answer(extract_gsm8k_answer(final_text))
                 gold = item.get("gold", "")
-                ok = (pred == gold) if (pred and gold) else False
-                error_msg = None
+                ok, pred, error_msg = score_gsm8k(final_text, gold)
 
             results.append(
                 {

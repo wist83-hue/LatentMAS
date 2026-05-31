@@ -124,10 +124,16 @@ def main():
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.9, help="Target GPU memory utilization for vLLM")
 
     args = parser.parse_args()
-    
+
     if args.method == "latent_mas" and args.use_vllm:
-        args.use_second_HF_model = True 
-        args.enable_prefix_caching = True
+        if not getattr(args, "use_second_HF_model", False):
+            print("[run.py] latent_mas + vLLM requires a second HF model for the latent pass; "
+                  "setting --use_second_HF_model=True")
+            args.use_second_HF_model = True
+        if not getattr(args, "enable_prefix_caching", False):
+            print("[run.py] latent_mas + vLLM benefits from prefix caching; "
+                  "setting --enable_prefix_caching=True")
+            args.enable_prefix_caching = True
     
     set_seed(args.seed)
     device = auto_device(args.device)

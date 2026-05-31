@@ -3,16 +3,12 @@ from typing import Dict, List, Optional, Tuple
 from . import default_agents, parse_pipeline, Agent, Parallel
 from models import ModelWrapper, _past_length
 from prompts import build_agent_message_sequential_latent_mas, build_agent_message_hierarchical_latent_mas
-from utils import extract_gsm8k_answer, normalize_answer, extract_markdown_python_block, run_with_timeout
+from utils import score_gsm8k, score_aime, extract_markdown_python_block, run_with_timeout
 import torch
 import argparse
 from vllm import SamplingParams
-import pdb
 
-try:
-    from transformers.cache_utils import Cache
-except ImportError:
-    Cache = None
+from transformers.cache_utils import Cache
 
 class LatentMASMethod:
     def __init__(
@@ -57,46 +53,56 @@ class LatentMASMethod:
         )
         self.task = args.task
 
-    def _copy_past_kv(self, past_kv: Optional[Tuple]) -> Optional[Tuple]:
-        """Deep-copy a DynamicCache so an isolated branch run can't mutate the parent state."""
+    def _copy_past_kv(self, past_kv: Optional[Cache]) -> Optional[Cache]:
+        """Deep-copy a DynamicCache so an isolated branch run can't mutate the parent state.
+
+        Branch isolation depends on this. If we silently fail to copy, the
+        branch's latent loop would write into the parent cache and the
+        independence guarantee breaks. So fail loudly on unknown types.
+
+        transformers 5.x removed `to_legacy_cache()`; we copy via the per-layer
+        keys/values tensors instead.
+        """
         if past_kv is None:
             return None
-        if Cache is not None and isinstance(past_kv, Cache):
-            legacy = past_kv.to_legacy_cache()
-            copied_legacy = tuple(
-                tuple(t.clone() for t in layer)
-                for layer in legacy
+        if not isinstance(past_kv, Cache):
+            raise TypeError(
+                f"_copy_past_kv: unsupported past_key_values type {type(past_kv).__name__}; "
+                "expected a transformers Cache subclass (DynamicCache, etc.)"
             )
-            return past_kv.__class__.from_legacy_cache(copied_legacy)
-        return past_kv
+        new_cache = past_kv.__class__()
+        # Make sure the new cache has as many layer slots as the source
+        while len(new_cache.layers) < len(past_kv.layers):
+            new_cache.layers.append(type(past_kv.layers[0])())
+        for i, src in enumerate(past_kv.layers):
+            dst = new_cache.layers[i]
+            if src.is_initialized:
+                # Initialize with empty tensors of the right dtype/device, then
+                # overwrite with cloned data. Direct assignment after init keeps
+                # the cache's bookkeeping consistent.
+                dst.lazy_initialization(src.keys, src.values)
+                dst.keys = src.keys.clone()
+                dst.values = src.values.clone()
+        return new_cache
 
-    @staticmethod
-    def _slice_tensor(tensor: torch.Tensor, tokens_to_keep: int) -> torch.Tensor:
-        if tokens_to_keep <= 0:
-            return tensor[..., 0:0, :].contiguous()
-        keep = min(tokens_to_keep, tensor.shape[-2])
-        start = tensor.shape[-2] - keep
-        return tensor[..., start:, :].contiguous()
+    def _truncate_past(self, past_kv: Optional[Cache], tokens_to_keep: int) -> Optional[Cache]:
+        """Truncate `past_kv` to the last `tokens_to_keep` positions, returning a copy.
 
-    def _truncate_past(self, past_kv: Optional[Tuple], tokens_to_keep: int) -> Optional[Tuple]:
+        We copy first so the original cache is preserved for the caller.
+        """
         if past_kv is None or tokens_to_keep <= 0:
             return None
-        if Cache is not None and isinstance(past_kv, Cache):
-            legacy = past_kv.to_legacy_cache()
-            trimmed_legacy = tuple(
-                tuple(self._slice_tensor(t, tokens_to_keep) for t in layer)
-                for layer in legacy
-            )
-            return past_kv.__class__.from_legacy_cache(trimmed_legacy)
-        trimmed_layers = []
-        for layer in past_kv:
-            if isinstance(layer, tuple):
-                trimmed_layers.append(tuple(self._slice_tensor(t, tokens_to_keep) for t in layer))
-            elif torch.is_tensor(layer):
-                trimmed_layers.append(self._slice_tensor(layer, tokens_to_keep))
-            else:
-                trimmed_layers.append(layer)
-        return tuple(trimmed_layers)
+        copied = self._copy_past_kv(past_kv)
+        cur = copied.get_seq_length()
+        if cur <= tokens_to_keep:
+            return copied
+        # Keep the LAST `tokens_to_keep` positions
+        start = cur - tokens_to_keep
+        for layer in copied.layers:
+            if layer.is_initialized:
+                layer.keys = layer.keys[..., start:, :].contiguous()
+                layer.values = layer.values[..., start:, :].contiguous()
+        return copied
 
     @torch.no_grad()
     def run_batch(self, items: List[Dict]) -> List[Dict]:
@@ -282,25 +288,14 @@ class LatentMASMethod:
                 print(f'=========================================')
                 print(f'Question {idx}')
                 print(f'error_msg: {error_msg}')
-                # print(f'=========================================')
 
             elif self.task in ["aime2024", "aime2025"]:
-                pred = normalize_answer(extract_gsm8k_answer(final_text))
                 gold = str(item.get("gold", "")).strip()
-                try:
-                    pred_int = int(pred) if pred is not None else None
-                    gold_int = int(gold)
-                    ok = (pred_int == gold_int) if pred_int is not None else False
-                    error_msg = None if pred_int is not None else f'No answer extracted. Gold: {gold}'
-                except ValueError:
-                    ok = False
-                    error_msg = f'Value error in parsing answer. Pred: {pred}, Gold: {gold}'
+                ok, pred, error_msg = score_aime(final_text, gold)
 
             else:
-                pred = normalize_answer(extract_gsm8k_answer(final_text))
                 gold = item.get("gold", "")
-                ok = (pred == gold) if (pred and gold) else False
-                error_msg = None
+                ok, pred, error_msg = score_gsm8k(final_text, gold)
             
             results.append(
                 {
@@ -422,15 +417,31 @@ class LatentMASMethod:
                 # Get current prompt embedding
                 curr_prompt_emb = self.model.embedding_layer(judger_encoded).squeeze(0).to(self.vllm_device)
                 
-                # assert Qwen model
-                assert "Qwen" in self.args.model_name or "qwen" in self.args.model_name, "latent_embedding_position is only supported for Qwen models currently."
+                # Find a "user turn start" marker in the prompt so we can splice
+                # the latent embeddings into the user-content region. The marker
+                # depends on the model's chat template; we try a handful of
+                # known patterns. Add to this list when supporting new families.
+                _user_turn_markers = [
+                    "<|im_start|>user\n",        # Qwen2/2.5/3, R1-distill-Qwen
+                    "<|start_header_id|>user<|end_header_id|>\n\n",  # Llama 3
+                    "[INST]",                    # Mistral / Llama 2
+                ]
+                marker = None
+                for m in _user_turn_markers:
+                    if all(m in p for p in judger_prompts):
+                        marker = m
+                        break
+                if marker is None:
+                    raise RuntimeError(
+                        "vLLM judger path: could not locate a known user-turn marker in "
+                        "judger_prompts. Add the chat template's user-turn marker to "
+                        "_user_turn_markers in methods/latent_mas.py."
+                    )
 
-                # handle latent embedding insertion position    
                 len_of_left = []
                 for p in judger_prompts:
-                    idx = p.find("<|im_start|>user\n")
-                    # Get the text up to and including "<|im_start|>user\n"
-                    left = p[: idx + len("<|im_start|>user\n")]
+                    idx = p.find(marker)
+                    left = p[: idx + len(marker)]
                     len_of_left.append(len(self.model.tokenizer(left)['input_ids']))
                     
                 B, L, H = curr_prompt_emb.shape
@@ -455,9 +466,6 @@ class LatentMASMethod:
                     # Get full prompt embedding from cat with previous ones 
                     # B L H B L H
                     # whole_prompt_emb = torch.cat([past_embedding, curr_prompt_emb], dim=1)
-                
-                # pdb.set_trace()              
-                
                 # Use vLLM 
                 prompt_embeds_list = [
                     {
@@ -489,9 +497,8 @@ class LatentMASMethod:
         results: List[Dict] = []
         for idx, item in enumerate(items):
             final_text = final_texts[idx]
-            pred = normalize_answer(extract_gsm8k_answer(final_text))
             gold = item["gold"]
-            ok = (pred == gold) if (pred and gold) else False
+            ok, pred, _ = score_gsm8k(final_text, gold)
             results.append(
                 {
                     "question": item["question"],

@@ -6,7 +6,7 @@ from utils import extract_gold, normalize_answer
 
 
 def load_gsm8k(split: str = "test", cache_dir: Optional[str] = None) -> Iterable[Dict]:
-    ds = load_dataset("gsm8k", "main", split=split, cache_dir=cache_dir)
+    ds = load_dataset("openai/gsm8k", "main", split=split, cache_dir=cache_dir)
     for item in ds:
         question = item["question"].strip()
         solution = item["answer"]
@@ -157,12 +157,12 @@ def load_mbppplus(
 ) -> Iterable[Dict]:
     ds = load_dataset("evalplus/mbppplus", subset, split=split, cache_dir=cache_dir)
     for item in ds:
+        test_list = item.get("test_list", []) or []
+        example_tests = "\n".join(test_list[:3]) if test_list else "(no example tests provided)"
         question = f"""Please provide a self-contained Python script that solves the following problem in a markdown code block:\n```python\nYOUR_PYTHON_CODE\n```:
 {item["prompt"]}
 Your answer will be tested on test cases like:
-{item["test_list"][0]}
-{item["test_list"][1]}
-{item["test_list"][2]}
+{example_tests}
 """
 
         answer = str(item["test"])
@@ -200,17 +200,21 @@ from typing import Iterable, Dict, Optional
 from datasets import load_dataset
 
 def load_medqa(split=None, subset=None, cache_dir=None):
+    # Path is relative to repo root by default; allow MEDQA_PATH env override.
+    import os as _os
+    medqa_path = _os.environ.get("MEDQA_PATH", "./data/medqa.json")
 
-    ds = load_dataset("json", data_files="./data/medqa.json", split='train')
+    ds = load_dataset("json", data_files=medqa_path, split='train')
     for item in ds:
         question = item["query"]
         raw_answer = str(item["answer"])
 
-        choice_map = {"0":"A", "1":"B", "2":"C", "3":"D"}
+        choice_map = {"0": "A", "1": "B", "2": "C", "3": "D"}
 
+        answer = ""
         for idx, op in enumerate(item['options']):
             if raw_answer in op:
-                answer = choice_map[str(idx)].lower()
+                answer = choice_map.get(str(idx), "").lower()
                 break
 
         gold = normalize_answer(answer)

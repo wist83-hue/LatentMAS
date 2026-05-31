@@ -12,6 +12,16 @@ except ImportError:
     _HAS_VLLM = False
 
 
+# Tikhonov regularizer for the W_a ridge regression (Eq. solving
+# (EᵀE + λI) W = Eᵀ E_in). Small enough to barely affect the solution
+# while keeping (EᵀE + λI) invertible for any vocab size.
+_W_A_RIDGE_LAMBDA = 1e-5
+
+# Floor for ||x|| denominators in renormalization to avoid div-by-zero
+# when a hidden state collapses to (near-)zero magnitude.
+_NORM_EPS = 1e-6
+
+
 def _ensure_pad_token(tokenizer: AutoTokenizer) -> None:
     if tokenizer.pad_token_id is None:
         if tokenizer.eos_token is not None:
@@ -27,7 +37,7 @@ def _past_length(past_key_values: Optional[Tuple]) -> int:
 
 
 class ModelWrapper:
-    def __init__(self, model_name: str, device: torch.device, use_vllm: bool = False, args = None):
+    def __init__(self, model_name: str, device: torch.device, use_vllm: bool = False, args=None):
         self.model_name = model_name
         self.device = device
         self.use_vllm = use_vllm and _HAS_VLLM
@@ -36,45 +46,46 @@ class ModelWrapper:
         self._latent_realign_matrices: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
         self.args = args
 
-        # for ablation
-        self.pre_aligned = None
-
         if self.use_vllm:
-            
-            tp_size = max(1, int(getattr(args, "tensor_parallel_size", 1)))
-            gpu_util = float(getattr(args, "gpu_memory_utilization", 0.9))
-            
-            print(f"[vLLM] Using vLLM backend for model {model_name}")
-            if args.enable_prefix_caching and args.method == "latent_mas": 
-                self.vllm_engine = LLM(model=model_name, tensor_parallel_size=tp_size, gpu_memory_utilization=gpu_util, enable_prefix_caching=True, enable_prompt_embeds=True)
-            else:
-                self.vllm_engine = LLM(model=model_name, tensor_parallel_size=tp_size, gpu_memory_utilization=gpu_util)
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-            
-            use_second_hf = bool(getattr(args, "use_second_HF_model", False)) if args else False
-            if use_second_hf:
-                self.HF_model = AutoModelForCausalLM.from_pretrained(
-                    model_name,
-                    dtype=(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
-                ).to(args.device2).eval() 
-                self.embedding_layer = self.HF_model.get_input_embeddings()
-                self.HF_device = args.device2
-                # if self.latent_space_realign:
-                self._ensure_latent_realign_matrix(self.HF_model, torch.device(self.HF_device), args)
-            elif self.latent_space_realign:
-                raise ValueError("latent_space_realign requires --use_second_HF_model when using vLLM backend.")
-            _ensure_pad_token(self.tokenizer)
-            return  # skip loading transformers model
+            self._init_vllm(model_name, args)
+        else:
+            self._init_hf(model_name, device, args)
 
-        # fallback: normal transformers path
-        # self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True,)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, padding_side="left")
-        _ensure_pad_token(self.tokenizer)
-        with torch.no_grad():
-            self.model = AutoModelForCausalLM.from_pretrained(
+    def _init_vllm(self, model_name: str, args) -> None:
+        tp_size = max(1, int(getattr(args, "tensor_parallel_size", 1)))
+        gpu_util = float(getattr(args, "gpu_memory_utilization", 0.9))
+        print(f"[vLLM] Using vLLM backend for model {model_name}")
+        if args.enable_prefix_caching and args.method == "latent_mas":
+            self.vllm_engine = LLM(
+                model=model_name, tensor_parallel_size=tp_size, gpu_memory_utilization=gpu_util,
+                enable_prefix_caching=True, enable_prompt_embeds=True,
+            )
+        else:
+            self.vllm_engine = LLM(
+                model=model_name, tensor_parallel_size=tp_size, gpu_memory_utilization=gpu_util,
+            )
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        use_second_hf = bool(getattr(args, "use_second_HF_model", False))
+        if use_second_hf:
+            self.HF_model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 dtype=(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
-            )
+            ).to(args.device2).eval()
+            self.embedding_layer = self.HF_model.get_input_embeddings()
+            self.HF_device = args.device2
+            self._ensure_latent_realign_matrix(self.HF_model, torch.device(self.HF_device), args)
+        elif self.latent_space_realign:
+            raise ValueError("latent_space_realign requires --use_second_HF_model when using vLLM backend.")
+        _ensure_pad_token(self.tokenizer)
+
+    def _init_hf(self, model_name: str, device: torch.device, args) -> None:
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, padding_side="left")
+        _ensure_pad_token(self.tokenizer)
+        # Choose dtype based on the device we'll actually place the model on,
+        # not just whether CUDA is available. bf16 on CPU breaks layer_norm.
+        load_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+        with torch.no_grad():
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype=load_dtype)
         if len(self.tokenizer) != self.model.get_input_embeddings().weight.shape[0]:
             self.model.resize_token_embeddings(len(self.tokenizer))
         self.model.to(device)
@@ -98,21 +109,6 @@ class ModelWrapper:
         if add_generation_prompt:
             segments.append("<|assistant|>")
         return "\n".join(segments)
-
-    def prepare_chat_input(
-        self, messages: List[Dict], add_generation_prompt: bool = True
-    ) -> Tuple[str, torch.Tensor, torch.Tensor, List[str]]:
-        prompt_text = self.render_chat(messages, add_generation_prompt=add_generation_prompt)
-        encoded = self.tokenizer(
-            prompt_text,
-            return_tensors="pt",
-            add_special_tokens=False,
-        )
-        input_ids = encoded["input_ids"].to(self.device)
-        attention_mask = encoded["attention_mask"].to(self.device)
-        active_ids = input_ids[0][attention_mask[0].bool()].tolist()
-        tokens = self.tokenizer.convert_ids_to_tokens(active_ids)
-        return prompt_text, input_ids, attention_mask, tokens
 
     def prepare_chat_batch(
         self,
@@ -167,21 +163,26 @@ class ModelWrapper:
             or not hasattr(output_embeds, "weight")
         ):
             raise RuntimeError("Cannot build latent realignment matrix: embedding weights not accessible.")
+        # Fast path: realign disabled -> only need target_norm (a scalar from
+        # input embedding magnitudes). Compute it cheaply without ever
+        # materializing both full embedding matrices in fp32.
+        if not self.args.latent_space_realign:
+            with torch.no_grad():
+                target_norm = input_embeds.weight.detach().to(dtype=torch.float32).norm(dim=1).mean().to(device)
+            D = input_embeds.weight.shape[1]
+            realign_matrix = torch.eye(D, device=device, dtype=torch.float32)
+            return realign_matrix, target_norm
+
+        # Paper path: solve ridge regression W_a = (EᵀE + λI)⁻¹ Eᵀ E_in.
+        # This needs both full matrices in fp32 (~2 × V × D × 4 bytes).
         input_weight = input_embeds.weight.detach().to(device=device, dtype=torch.float32)
         output_weight = output_embeds.weight.detach().to(device=device, dtype=torch.float32)
         gram = torch.matmul(output_weight.T, output_weight)
-        reg = 1e-5 * torch.eye(gram.shape[0], device=gram.device, dtype=gram.dtype)
+        reg = _W_A_RIDGE_LAMBDA * torch.eye(gram.shape[0], device=gram.device, dtype=gram.dtype)
         gram = gram + reg
         rhs = torch.matmul(output_weight.T, input_weight)
         realign_matrix = torch.linalg.solve(gram, rhs)
         target_norm = input_weight.norm(dim=1).mean().detach()
-
-        if self.args.latent_space_realign:
-            pass
-        else:
-            # keep the matrix, for further normalization
-            realign_matrix = torch.eye(realign_matrix.shape[0], device=realign_matrix.device, dtype=realign_matrix.dtype)
-
         return realign_matrix, target_norm
 
     def _ensure_latent_realign_matrix(self, model, device, args) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -205,10 +206,7 @@ class ModelWrapper:
         matrix, target_norm = self._ensure_latent_realign_matrix(model, hidden.device, self.args)
         hidden_fp32 = hidden.to(torch.float32)
         aligned = torch.matmul(hidden_fp32, matrix)
-
-        aligned_norm = aligned.norm(dim=-1, keepdim=True).clamp_min(1e-6)
-        pre_aligned = aligned.detach().clone()
-        self.pre_aligned = pre_aligned
+        aligned_norm = aligned.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
         aligned = aligned * (target_norm / aligned_norm)
         return aligned.to(hidden.dtype)
 
@@ -292,6 +290,11 @@ class ModelWrapper:
                 )
                 attention_mask = torch.cat([past_mask, attention_mask], dim=-1)
 
+        # output_hidden_states=True is needed only to extract the final layer's
+        # hidden at the last position. For the prompt prefill (seq=prompt_len)
+        # this allocates [num_layers, B, prompt_len, D] briefly; transformers
+        # drops intermediate layers after this call returns. For per-step passes
+        # below (seq=1), the cost is negligible.
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -301,14 +304,8 @@ class ModelWrapper:
             return_dict=True,
         )
         past = outputs.past_key_values
-
-        e_t = outputs.hidden_states[0][:, -1, :]          # [B, D]
-        last_hidden = outputs.hidden_states[-1][:, -1, :] # [B, D]
-        h_t = last_hidden.detach().clone()
-
-        e_t_plus_1 = None
+        last_hidden = outputs.hidden_states[-1][:, -1, :]  # [B, D]
         latent_vecs_all: List[torch.Tensor] = []
-        latent_vecs_all.append(e_t.detach().clone())
 
         halt_threshold = float(getattr(self.args, "latent_halt_threshold", 0.0) or 0.0) if self.args else 0.0
         halt_entropy = float(getattr(self.args, "latent_halt_entropy_nats", 0.0) or 0.0) if self.args else 0.0
@@ -327,10 +324,6 @@ class ModelWrapper:
             latent_vec = self._apply_latent_realignment(last_hidden, source_model)
 
             latent_vecs_all.append(latent_vec.detach().clone())
-
-            if step == 0:
-                e_t_plus_1 = latent_vec.detach().clone()
-
             latent_embed = latent_vec.unsqueeze(1)
 
             past_len = _past_length(past)
@@ -353,6 +346,8 @@ class ModelWrapper:
             if (step + 1) >= halt_min_steps:
                 vel_halt = False
                 if halt_threshold > 0 and prev_h1 is not None and prev_h2 is not None:
+                    # Squared-magnitude denominator for relative-velocity halt check;
+                    # tiny floor prevents NaN on collapsed states.
                     denom = (last_hidden ** 2).sum(dim=-1).clamp_min(1e-8)
                     d1 = ((last_hidden - prev_h1) ** 2).sum(dim=-1) / denom
                     d2 = ((last_hidden - prev_h2) ** 2).sum(dim=-1) / denom
@@ -387,8 +382,8 @@ class ModelWrapper:
             prev_h1 = last_hidden
 
         if return_latent_vecs:
-            if len(latent_vecs_all) > 1:
-                latent_vecs_tensor = torch.stack(latent_vecs_all[1:], dim=1)
+            if latent_vecs_all:
+                latent_vecs_tensor = torch.stack(latent_vecs_all, dim=1)
             else:
                 latent_vecs_tensor = torch.zeros(
                     (input_ids.shape[0], 0, last_hidden.shape[-1]),
