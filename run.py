@@ -191,13 +191,17 @@ def main():
     parser.add_argument(
         "--latent_norm_mode",
         choices=["preserve", "scalar_mean", "median", "none"],
-        default="preserve",
+        default="scalar_mean",
         help=(
             "How to rescale post-W_a latent vectors before feeding back. "
-            "'preserve' (default): keep the W_a-output magnitude per row (paper-faithful). "
-            "'scalar_mean': clamp every row to the vocab-mean embedding norm (legacy; kills "
-            "per-row magnitude variation). 'median': use vocab median norm (more robust than mean). "
-            "'none': no rescaling, same effect as 'preserve' for the typical W_a matrix."
+            "'scalar_mean' (default, paper-faithful): clamp every row to the vocab-mean "
+            "input-embedding norm. Necessary because hidden states have ~100x the magnitude "
+            "of input embeddings; without rescaling the fed-back vector is wildly OOD. "
+            "'preserve': keep the W_a-output magnitude per row (only correct if W_a actually "
+            "produces embedding-scale vectors, which holds for some untied models but breaks "
+            "for tied embeddings like Qwen3-4B). "
+            "'median': use vocab median norm instead of mean (outlier-robust). "
+            "'none': alias for 'preserve'."
         ),
     )
     parser.add_argument("--seed", type=int, default=42)

@@ -38,29 +38,27 @@ class TestLatentAblationZero:
 
 class TestLatentAblationShuffle:
     def test_shuffle_changes_assignment(self, tiny_model_wrapper, tiny_args):
+        # Use preserve mode so per-row magnitudes (not just directions) differ
+        # between rows. With scalar_mean clamp + tiny-gpt2's D=2, the rows can
+        # collapse to indistinguishable vectors and shuffle becomes a no-op.
         mw = tiny_model_wrapper
         torch.manual_seed(0)
         args = copy.copy(tiny_args)
         args.latent_ablation = "none"
+        args.latent_norm_mode = "preserve"
         mw.args = args
         ids, mask = _ids_mask(mw)
         _, base = mw.generate_latent_batch(
             ids, attention_mask=mask, latent_steps=2, return_latent_vecs=True,
         )
-        # Now run with shuffle and a fixed seed
         torch.manual_seed(123)
         args = copy.copy(tiny_args)
         args.latent_ablation = "shuffle"
+        args.latent_norm_mode = "preserve"
         mw.args = args
         _, shuf = mw.generate_latent_batch(
             ids, attention_mask=mask, latent_steps=2, return_latent_vecs=True,
         )
-        # The shuffled run should at minimum differ from the base; sufficient
-        # to assert "different latent_vecs after the first step." Because
-        # base and shuf use the same model and inputs, step 1 latent is the
-        # same realignment of the same last_hidden; the shuffle then permutes
-        # who gets which. With B=4 and torch.randperm, almost always at least
-        # one row swaps.
         assert vecs_not_identical(base, shuf), (
             "shuffle ablation produced identical vectors to base run"
         )
