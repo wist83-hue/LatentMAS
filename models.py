@@ -206,8 +206,33 @@ class ModelWrapper:
         matrix, target_norm = self._ensure_latent_realign_matrix(model, hidden.device, self.args)
         hidden_fp32 = hidden.to(torch.float32)
         aligned = torch.matmul(hidden_fp32, matrix)
-        aligned_norm = aligned.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
-        aligned = aligned * (target_norm / aligned_norm)
+        mode = getattr(self.args, "latent_norm_mode", "preserve") if self.args else "preserve"
+        if mode == "preserve" or mode == "none":
+            # Keep the magnitude that came out of W_a. With a well-conditioned
+            # W_a this is already in the right scale; with W_a == identity (no
+            # realignment), this is the model's native hidden magnitude.
+            pass
+        elif mode == "scalar_mean":
+            # Legacy behavior: rescale every row to the vocab-mean input
+            # embedding norm. Kills per-row magnitude variation; can produce
+            # the random-walk dynamics we observed in the velocity-halt debug.
+            aligned_norm = aligned.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
+            aligned = aligned * (target_norm / aligned_norm)
+        elif mode == "median":
+            # Vocab-median input embedding norm. More robust than 'scalar_mean'
+            # against outlier embeddings; still a single scalar so it still
+            # destroys per-row variation.
+            aligned_norm = aligned.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
+            # `target_norm` was computed as mean by _build_latent_realign_matrix;
+            # for median we compute from input embeddings on demand and cache.
+            if not hasattr(self, "_target_norm_median"):
+                input_embeds = model.get_input_embeddings()
+                w = input_embeds.weight.detach().to(dtype=torch.float32)
+                self._target_norm_median = w.norm(dim=1).median().detach()
+            t = self._target_norm_median.to(device=aligned.device, dtype=aligned.dtype)
+            aligned = aligned * (t / aligned_norm)
+        else:
+            raise ValueError(f"unknown latent_norm_mode: {mode!r}")
         return aligned.to(hidden.dtype)
 
     @torch.no_grad()

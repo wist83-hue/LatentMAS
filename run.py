@@ -112,7 +112,23 @@ def main():
     parser.add_argument("--generate_bs", type=int, default=20, help="Batch size for generation")
     parser.add_argument("--text_mas_context_length", type=int, default=-1, help="TextMAS context length limit")
     parser.add_argument("--think", action="store_true", help="Manually add think token in the prompt for LatentMAS")
-    parser.add_argument("--latent_space_realign", action="store_true")
+    # The paper's central method depends on the ridge-regressed W_a matrix
+    # mapping output hidden space -> input embedding space. Default ON so
+    # `--method latent_mas` is paper-faithful out of the box; opt out with
+    # --no_latent_space_realign for ablation.
+    parser.add_argument("--latent_space_realign", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--latent_norm_mode",
+        choices=["preserve", "scalar_mean", "median", "none"],
+        default="preserve",
+        help=(
+            "How to rescale post-W_a latent vectors before feeding back. "
+            "'preserve' (default): keep the W_a-output magnitude per row (paper-faithful). "
+            "'scalar_mean': clamp every row to the vocab-mean embedding norm (legacy; kills "
+            "per-row magnitude variation). 'median': use vocab median norm (more robust than mean). "
+            "'none': no rescaling, same effect as 'preserve' for the typical W_a matrix."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
 
     # vLLM support

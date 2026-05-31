@@ -65,6 +65,7 @@ def tiny_args():
         temperature=0.7,
         top_p=0.95,
         text_mas_context_length=-1,
+        latent_norm_mode="preserve",
     )
 
 

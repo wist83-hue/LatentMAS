@@ -91,16 +91,60 @@ class TestRealignmentMatrix:
 
 
 class TestApplyLatentRealignment:
-    def test_output_shape_and_norm(self, tiny_model_wrapper):
+    def test_preserve_mode_keeps_magnitude_variation(self, tiny_model_wrapper, tiny_args):
+        import copy
         mw = tiny_model_wrapper
+        args = copy.copy(tiny_args)
+        args.latent_norm_mode = "preserve"
+        mw.args = args
+        mw._latent_realign_matrices.clear()
         D = mw.model.get_input_embeddings().weight.shape[1]
-        h = torch.randn(2, D)
+        # Two rows of very different magnitudes
+        h = torch.stack([torch.ones(D), torch.ones(D) * 10.0])
         out = mw._apply_latent_realignment(h, mw.model)
-        assert out.shape == (2, D)
-        # Each row should be renormalized to target_norm (per current behavior)
-        _, target_norm = mw._ensure_latent_realign_matrix(mw.model, torch.device("cpu"), mw.args)
         norms = out.to(torch.float32).norm(dim=-1)
-        assert torch.allclose(norms, target_norm.expand_as(norms).to(norms.dtype), atol=1e-3)
+        # With identity W_a + preserve, row-2 should be ~10x row-1
+        assert norms[1] > 5.0 * norms[0]
+
+    def test_scalar_mean_clamps_to_one_magnitude(self, tiny_model_wrapper, tiny_args):
+        import copy
+        mw = tiny_model_wrapper
+        args = copy.copy(tiny_args)
+        args.latent_norm_mode = "scalar_mean"
+        mw.args = args
+        mw._latent_realign_matrices.clear()
+        D = mw.model.get_input_embeddings().weight.shape[1]
+        h = torch.stack([torch.ones(D), torch.ones(D) * 10.0])
+        out = mw._apply_latent_realignment(h, mw.model)
+        norms = out.to(torch.float32).norm(dim=-1)
+        # Legacy behavior: both rows clamped to the same scalar target_norm
+        assert torch.allclose(norms[0], norms[1], atol=1e-2)
+
+    def test_median_mode_also_clamps(self, tiny_model_wrapper, tiny_args):
+        import copy
+        mw = tiny_model_wrapper
+        args = copy.copy(tiny_args)
+        args.latent_norm_mode = "median"
+        mw.args = args
+        mw._latent_realign_matrices.clear()
+        # Clear cached median in case prior tests set it
+        if hasattr(mw, "_target_norm_median"):
+            del mw._target_norm_median
+        D = mw.model.get_input_embeddings().weight.shape[1]
+        h = torch.stack([torch.ones(D), torch.ones(D) * 10.0])
+        out = mw._apply_latent_realignment(h, mw.model)
+        norms = out.to(torch.float32).norm(dim=-1)
+        assert torch.allclose(norms[0], norms[1], atol=1e-2)
+
+    def test_unknown_mode_raises(self, tiny_model_wrapper, tiny_args):
+        import copy
+        mw = tiny_model_wrapper
+        args = copy.copy(tiny_args)
+        args.latent_norm_mode = "bogus"
+        mw.args = args
+        D = mw.model.get_input_embeddings().weight.shape[1]
+        with pytest.raises(ValueError, match="unknown latent_norm_mode"):
+            mw._apply_latent_realignment(torch.randn(2, D), mw.model)
 
 
 class TestGenerateLatentBatch:

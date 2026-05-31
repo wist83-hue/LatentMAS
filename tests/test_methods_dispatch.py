@@ -86,6 +86,24 @@ class TestLatentMasRunBatchParallel:
         results = method.run_batch(_items())
         assert len(results) == 2
 
+    def test_parallel_trace_input_is_string(self, tiny_args, tiny_model_wrapper):
+        """Regression: branch traces stored raw message list instead of rendered
+        prompt string, which broke run.py's print loop (.rstrip on a list)."""
+        from methods.latent_mas import LatentMASMethod
+        args = copy.copy(tiny_args)
+        args.pipeline = "parallel(planner|critic),judger"
+        method = LatentMASMethod(
+            tiny_model_wrapper, latent_steps=1, judger_max_new_tokens=2,
+            generate_bs=2, args=args,
+        )
+        results = method.run_batch(_items())
+        for r in results:
+            for a in r["agents"]:
+                # Every trace's "input" must be a string so run.py can rstrip it
+                assert isinstance(a.get("input", ""), str), (
+                    f"trace 'input' must be str, got {type(a.get('input')).__name__}"
+                )
+
 
 class TestLatentMasAnchor:
     def test_anchor_emits_text(self, tiny_args, tiny_model_wrapper):

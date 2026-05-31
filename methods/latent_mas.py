@@ -128,7 +128,7 @@ class LatentMASMethod:
                         bmsgs = [build_agent_message_sequential_latent_mas(role=ba.role, question=it["question"], context="", method=self.method_name, args=self.args) for it in items]
                     else:
                         bmsgs = [build_agent_message_hierarchical_latent_mas(role=ba.role, question=it["question"], context="", method=self.method_name, args=self.args) for it in items]
-                    _, b_ids, b_mask, _ = self.model.prepare_chat_batch(bmsgs, add_generation_prompt=True)
+                    b_prompts, b_ids, b_mask, _ = self.model.prepare_chat_batch(bmsgs, add_generation_prompt=True)
                     snap_copy = self._copy_past_kv(snapshot)
                     k_branch = self.latent_steps_map.get(ba.role, self.latent_steps)
                     _, latent_vecs = self.model.generate_latent_batch(
@@ -141,7 +141,7 @@ class LatentMASMethod:
                     for idx in range(batch_size):
                         agent_traces[idx].append({
                             "name": ba.name, "role": ba.role, "branch": True,
-                            "input": bmsgs[idx], "latent_steps": k_branch, "output": "",
+                            "input": b_prompts[idx], "latent_steps": k_branch, "output": "",
                         })
                 past_kv = self.model.stitch_and_prefill(snapshot, branch_data)
                 continue
