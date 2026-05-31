@@ -164,6 +164,15 @@ def main():
             "and argmax_embed-K=N produce identical KV cache state."
         ),
     )
+    parser.add_argument(
+        "--concise_nonjudger_prompt",
+        action="store_true",
+        help=(
+            "Append a 'reply with a single short sentence' instruction to non-judger "
+            "agent prompts. Helps short-budget text_mas pack content into its cap, and "
+            "should be used with matching latent_mas runs for an apples-to-apples comparison."
+        ),
+    )
     parser.add_argument("--think", action="store_true", help="Manually add think token in the prompt for LatentMAS")
     # The paper's central method depends on the ridge-regressed W_a matrix
     # mapping output hidden space -> input embedding space. Default ON so

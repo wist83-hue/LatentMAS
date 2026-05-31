@@ -1,4 +1,21 @@
 
+_CONCISE_SUFFIX = "\n\nIMPORTANT: Reply with a single short sentence (under 20 tokens). Be concise and informative; skip preamble."
+
+
+def _apply_concise(user_prompt: str, role: str, args) -> str:
+    """Append a 'be concise' instruction for non-judger agents when the flag is set.
+
+    Used to give text_mas_short its best shot at packing useful content into a
+    truncated budget, and to match argmax_embed latent_mas under the same
+    prompting for an apples-to-apples comparison.
+    """
+    if role == "judger":
+        return user_prompt
+    if args is None or not getattr(args, "concise_nonjudger_prompt", False):
+        return user_prompt
+    return user_prompt.rstrip() + _CONCISE_SUFFIX
+
+
 def build_agent_message_sequential_latent_mas(role: str, question: str, context: str = "", method=None, args=None):
 
     system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
@@ -109,6 +126,7 @@ Now, reason step by step and output the final answer inside \\boxed{{YOUR_FINAL_
         else: 
             raise NotImplementedError(f"Task {args.task} not implemented in v5 judger prompt.")
         
+    user_prompt = _apply_concise(user_prompt, role, args)
     return [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_prompt},
@@ -332,6 +350,7 @@ Input Question: {question}
 Your response:
 """
 
+    user_content = _apply_concise(user_content, role, args)
     return [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_content},
@@ -502,6 +521,7 @@ You must reason step-by-step to solve the **provided Target Question** without o
 Now, reason step by step and present your final answer clearly at the end.
 """
 
+    user_content = _apply_concise(user_content, role, args)
     return [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_content},
@@ -685,6 +705,7 @@ Input Question: {question}
 Your response:
 """
 
+    user_content = _apply_concise(user_content, role, args)
     return [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_content},

@@ -63,6 +63,44 @@ class TestLatentMasSequentialPrompts:
             )
 
 
+class TestConciseSuffix:
+    def test_appended_when_flag_set_for_nonjudger(self):
+        args = argparse.Namespace(
+            model_name="Qwen/Qwen3-4B", task="gsm8k", think=False,
+            text_mas_context_length=-1,
+            concise_nonjudger_prompt=True,
+        )
+        msgs = build_agent_message_sequential_latent_mas(
+            role="planner", question="Q", method="latent_mas", args=args,
+        )
+        joined = " ".join(m["content"] for m in msgs)
+        assert "single short sentence" in joined
+
+    def test_not_appended_for_judger(self):
+        args = argparse.Namespace(
+            model_name="Qwen/Qwen3-4B", task="gsm8k", think=False,
+            text_mas_context_length=-1,
+            concise_nonjudger_prompt=True,
+        )
+        msgs = build_agent_message_sequential_latent_mas(
+            role="judger", question="Q", method="latent_mas", args=args,
+        )
+        joined = " ".join(m["content"] for m in msgs)
+        assert "single short sentence" not in joined
+
+    def test_not_appended_when_flag_off(self):
+        args = argparse.Namespace(
+            model_name="Qwen/Qwen3-4B", task="gsm8k", think=False,
+            text_mas_context_length=-1,
+            concise_nonjudger_prompt=False,
+        )
+        msgs = build_agent_message_sequential_latent_mas(
+            role="planner", question="Q", method="latent_mas", args=args,
+        )
+        joined = " ".join(m["content"] for m in msgs)
+        assert "single short sentence" not in joined
+
+
 class TestTextMasSequentialPrompts:
     def test_returns_messages(self):
         msgs = build_agent_messages_sequential_text_mas(

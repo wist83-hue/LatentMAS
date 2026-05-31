@@ -71,6 +71,7 @@ def tiny_args():
         latent_feedback_mode="w_a",
         latent_soft_embed_temperature=1.0,
         text_mas_nonjudger_max_tokens=0,
+        concise_nonjudger_prompt=False,
     )
 
 
