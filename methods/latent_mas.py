@@ -166,9 +166,11 @@ class LatentMASMethod:
             if agent.role != "judger":
                 prev_past_len = _past_length(past_kv)
 
-                if self.args.think:
+                # --latent_thinking_brackets implies <think> opening; --think also does.
+                _open_think = self.args.think or getattr(self.args, "latent_thinking_brackets", False)
+                if _open_think:
                         wrapped_prompts = [f"{prompt}<think>" for prompt in prompts]
-                else: 
+                else:
                     wrapped_prompts = prompts
 
                 wrapped_encoded = self.model.tokenizer(
@@ -196,6 +198,14 @@ class LatentMASMethod:
                     tokens_added = new_past_len - prev_past_len
                     tokens_to_keep = k_for_agent if self.latent_only else tokens_added
                     past_kv = self._truncate_past(past_kv, tokens_to_keep)
+
+                # Close the explicit <think> bracket if --latent_thinking_brackets is set.
+                # Injects '</think>\n\n' tokens into the KV cache so the cached
+                # thinking span is properly terminated for R1-Distill-style models.
+                if getattr(self.args, "latent_thinking_brackets", False) and past_kv is not None:
+                    past_kv = self.model.append_tokens_to_cache(
+                        "</think>\n\n", past_kv, batch_size,
+                    )
 
                 anchor_tokens = int(getattr(self.args, "inter_persona_anchor_tokens", 0) or 0)
                 anchor_texts = ["" for _ in range(batch_size)]

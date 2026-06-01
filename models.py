@@ -585,6 +585,27 @@ class ModelWrapper:
         return past
 
     @torch.no_grad()
+    def append_tokens_to_cache(self, text: str, past_key_values, batch_size: int):
+        """Force-append a fixed text's tokens to the past_kv via one model forward.
+
+        Used by --latent_thinking_brackets to inject `</think>\\n\\n` between a
+        non-judger persona's latent loop and the next agent's prompt, so the
+        cached "thinking" span is properly closed for reasoning-distilled models.
+        """
+        ids = self.tokenizer.encode(text, add_special_tokens=False, return_tensors="pt").to(self.device)
+        ids_batch = ids.expand(batch_size, -1)
+        past_len = _past_length(past_key_values)
+        attn = torch.ones(
+            (batch_size, past_len + ids_batch.shape[1]),
+            dtype=torch.long, device=self.device,
+        )
+        outputs = self.model(
+            input_ids=ids_batch, attention_mask=attn,
+            past_key_values=past_key_values, use_cache=True, return_dict=True,
+        )
+        return outputs.past_key_values
+
+    @torch.no_grad()
     def stitch_and_prefill(
         self,
         past_key_values: Optional[Tuple],

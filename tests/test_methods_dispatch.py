@@ -105,6 +105,28 @@ class TestLatentMasRunBatchParallel:
                 )
 
 
+class TestLatentThinkingBrackets:
+    def test_brackets_runs_end_to_end(self, tiny_args, tiny_model_wrapper):
+        """latent_mas with --latent_thinking_brackets should run cleanly."""
+        from methods.latent_mas import LatentMASMethod
+        from models import _past_length
+        args = copy.copy(tiny_args)
+        args.method = "latent_mas"
+        args.task = "gsm8k"
+        args.latent_thinking_brackets = True
+        method = LatentMASMethod(
+            tiny_model_wrapper, latent_steps=2, judger_max_new_tokens=4,
+            generate_bs=2, args=args,
+        )
+        results = method.run_batch(_items())
+        assert len(results) == 2
+        # Non-judger trace inputs should now end with <think>
+        for r in results:
+            for a in r["agents"]:
+                if a["role"] != "judger":
+                    assert a["input"].endswith("<think>")
+
+
 class TestTextMasShortCap:
     def test_short_cap_runs_end_to_end(self, tiny_args, tiny_model_wrapper):
         """text_mas with --text_mas_nonjudger_max_tokens=8 should run cleanly."""

@@ -222,6 +222,18 @@ def main():
             "Judger prompt is unchanged."
         ),
     )
+    parser.add_argument(
+        "--latent_thinking_brackets",
+        action="store_true",
+        help=(
+            "Wrap each non-judger persona's latent loop with explicit <think> and "
+            "</think> tokens. Designed for reasoning-distilled models (R1-Distill) "
+            "whose training had complete <think>...</think> blocks. Opens by "
+            "appending '<think>' to the prompt suffix (like --think); closes by "
+            "injecting '</think>\\n\\n' tokens into the KV cache after the latent "
+            "loop. Judger is unaffected."
+        ),
+    )
     # The paper's central method depends on the ridge-regressed W_a matrix
     # mapping output hidden space -> input embedding space. Default ON so
     # `--method latent_mas` is paper-faithful out of the box; opt out with
