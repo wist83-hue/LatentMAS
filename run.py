@@ -194,6 +194,16 @@ def main():
         ),
     )
     parser.add_argument("--think", action="store_true", help="Manually add think token in the prompt for LatentMAS")
+    parser.add_argument(
+        "--disable_thinking",
+        action="store_true",
+        help=(
+            "For Qwen3+ models: pass enable_thinking=False to the chat template, "
+            "making the model skip its internal <think></think> reasoning phase and "
+            "go straight to the final answer. Lets us produce a baseline that's "
+            "comparable to papers that disabled thinking mode."
+        ),
+    )
     # The paper's central method depends on the ridge-regressed W_a matrix
     # mapping output hidden space -> input embedding space. Default ON so
     # `--method latent_mas` is paper-faithful out of the box; opt out with

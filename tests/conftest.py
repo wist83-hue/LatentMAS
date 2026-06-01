@@ -74,6 +74,7 @@ def tiny_args():
         text_mas_nonjudger_max_tokens=0,
         concise_nonjudger_prompt=False,
         latent_halt_on_eos=False,
+        disable_thinking=False,
     )
 
 

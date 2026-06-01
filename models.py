@@ -98,9 +98,15 @@ class ModelWrapper:
     def render_chat(self, messages: List[Dict], add_generation_prompt: bool = True) -> str:
         tpl = getattr(self.tokenizer, "chat_template", None)
         if tpl:
-            return self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=add_generation_prompt
-            )
+            template_kwargs = {"tokenize": False, "add_generation_prompt": add_generation_prompt}
+            # Qwen3+ supports an enable_thinking template flag. Default ON; setting
+            # the CLI flag --disable_thinking turns it off (model emits an empty
+            # <think></think> block and goes straight to the final answer).
+            # Models whose chat templates don't reference enable_thinking will
+            # silently ignore this kwarg.
+            if self.args and getattr(self.args, "disable_thinking", False):
+                template_kwargs["enable_thinking"] = False
+            return self.tokenizer.apply_chat_template(messages, **template_kwargs)
         segments = []
         for message in messages:
             role = message.get("role", "user")
@@ -210,21 +216,28 @@ class ModelWrapper:
         """
         if getattr(self, "_ood_ref_l2", None) is not None:
             return
-        emb = model.get_input_embeddings().weight.detach().to(torch.float32)
-        V = emb.shape[0]
-        # Precompute squared row norms (used in every per-step OOD check too)
-        self._ood_emb_sq_norms = (emb ** 2).sum(dim=-1)  # [V]
+        emb_raw = model.get_input_embeddings().weight.detach()
+        V = emb_raw.shape[0]
+        # Memory-fused per-row norm: avoids materializing [V, D] fp32 squared
+        # intermediate (~2.5GB for Qwen3-8B). torch.norm is kernel-fused.
+        self._ood_emb_sq_norms = emb_raw.norm(dim=-1).to(torch.float32) ** 2  # [V]
+        # For the sample-vs-all matmul we need fp32 emb. Cast in-place by
+        # chunks to keep peak memory manageable on the model's GPU.
         n = min(64, V)
-        idx = torch.randperm(V, generator=torch.Generator().manual_seed(0))[:n].to(emb.device)
-        sample = emb[idx]  # [n, D]
-        # cdist might OOM at V=152K * n=64; manage with batched dot products
-        s_sq = (sample ** 2).sum(dim=-1, keepdim=True)
-        inner = sample @ emb.T  # [n, V]
+        idx = torch.randperm(V, generator=torch.Generator().manual_seed(0))[:n].to(emb_raw.device)
+        # We need emb in fp32 only for the matmul below; do it once.
+        emb_fp32 = emb_raw.to(torch.float32)
+        sample = emb_fp32[idx]  # [n, D]
+        s_sq = (sample.norm(dim=-1) ** 2).unsqueeze(1)  # [n, 1] — fused
+        inner = sample @ emb_fp32.T  # [n, V]
         d_sq = (s_sq + self._ood_emb_sq_norms.unsqueeze(0) - 2 * inner).clamp_min(0)
-        # Mask self-distance (sample row k maps to emb row idx[k]; that's 0)
         for k in range(n):
             d_sq[k, idx[k]] = float("inf")
         nn_l2 = d_sq.sqrt().min(dim=-1).values
+        del emb_fp32, inner, d_sq
+        import torch as _torch  # avoid name shadowing in some paths
+        if hasattr(_torch.cuda, "empty_cache"):
+            _torch.cuda.empty_cache()
         self._ood_ref_l2 = nn_l2.mean().item()
         print(
             f"[ood] reference: mean nearest-neighbor L2 distance between real E_in rows "
@@ -439,23 +452,30 @@ class ModelWrapper:
                 lm_head = source_model.get_output_embeddings()
                 emb = source_model.get_input_embeddings()
                 with torch.no_grad():
-                    v = latent_vec.detach().to(torch.float32)
-                    emb_w = emb.weight.detach().to(torch.float32)
-                    # Nearest-neighbor in E_in
-                    v_sq = (v ** 2).sum(dim=-1, keepdim=True)
-                    inner = v @ emb_w.T
-                    d_sq = (v_sq + self._ood_emb_sq_norms - 2 * inner).clamp_min(0)
-                    nn_l2 = d_sq.sqrt().min(dim=-1).values  # [B]
-                    v_unit = v / v.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
-                    emb_unit = emb_w / emb_w.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
-                    nn_cos = 1.0 - (v_unit @ emb_unit.T).max(dim=-1).values  # [B]
-                    # Decode-and-check: what token would the model emit next?
+                    # Work in the model's native dtype to avoid materializing
+                    # a [V, D] fp32 copy of the embedding matrix every step.
+                    # Cast small per-batch tensors to fp32 at the end for
+                    # readable distance values.
+                    emb_w = emb.weight.detach()  # [V, D] in model dtype
+                    v = latent_vec.detach().to(emb_w.dtype)
+                    # NN L2: ||v - r||² = ||v||² + ||r||² - 2 v·r
+                    v_sq = (v.norm(dim=-1) ** 2).unsqueeze(-1)  # [B, 1]
+                    inner = v @ emb_w.T  # [B, V]
+                    d_sq = (v_sq.float() + self._ood_emb_sq_norms.to(v.device) - 2 * inner.float()).clamp_min(0)
+                    nn_l2 = d_sq.sqrt().min(dim=-1).values
+                    # NN cosine
+                    v_norms = v.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
+                    emb_norms = emb_w.norm(dim=-1).clamp_min(_NORM_EPS)  # [V]
+                    inner_norm = inner / v_norms.float()  # [B, V] sort of normalized
+                    cos = (inner.float() / (v_norms.float() * emb_norms.float().unsqueeze(0)))
+                    nn_cos = 1.0 - cos.max(dim=-1).values
+                    # Decode-and-check
                     pre_logits = lm_head(last_hidden)
-                    pred_id = pre_logits.argmax(dim=-1)  # [B]
-                    target = emb_w[pred_id]
-                    dec_l2 = (v - target).norm(dim=-1)
-                    target_unit = target / target.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
-                    dec_cos = 1.0 - (v_unit * target_unit).sum(dim=-1)
+                    pred_id = pre_logits.argmax(dim=-1)
+                    target = emb_w[pred_id]  # [B, D] in model dtype
+                    dec_l2 = (v.float() - target.float()).norm(dim=-1)
+                    target_norm = target.norm(dim=-1, keepdim=True).clamp_min(_NORM_EPS)
+                    dec_cos = 1.0 - ((v.float() * target.float()).sum(dim=-1) / (v_norms.squeeze(-1).float() * target_norm.squeeze(-1).float()))
                 tok_obj = getattr(self, "tokenizer", None)
                 pred_str = tok_obj.convert_ids_to_tokens([pred_id[0].item()])[0] if tok_obj is not None else str(pred_id[0].item())
                 print(
