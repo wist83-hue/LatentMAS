@@ -63,6 +63,64 @@ class TestLatentMasSequentialPrompts:
             )
 
 
+class TestMinimalPersonaPrompts:
+    def _args(self, minimal=False, task="gsm8k"):
+        return argparse.Namespace(
+            model_name="Qwen/Qwen3-4B", task=task, think=False,
+            text_mas_context_length=-1,
+            concise_nonjudger_prompt=False,
+            minimal_persona_prompts=minimal,
+        )
+
+    def test_minimal_replaces_planner_prompt(self):
+        args = self._args(minimal=True)
+        msgs = build_agent_message_sequential_latent_mas(
+            role="planner", question="What is 2+2?", method="latent_mas", args=args,
+        )
+        content = msgs[-1]["content"]
+        assert "Solve this problem step by step" in content
+        assert "What is 2+2?" in content
+        # Verbose persona framing should be gone
+        assert "Planner Agent" not in content
+
+    def test_minimal_replaces_critic_prompt(self):
+        args = self._args(minimal=True)
+        msgs = build_agent_message_sequential_latent_mas(
+            role="critic", question="Q", method="latent_mas", args=args,
+        )
+        content = msgs[-1]["content"]
+        assert "Solve this problem step by step" in content
+        assert "Critic Agent" not in content
+
+    def test_minimal_replaces_refiner_prompt(self):
+        args = self._args(minimal=True)
+        msgs = build_agent_message_sequential_latent_mas(
+            role="refiner", question="Q", method="latent_mas", args=args,
+        )
+        content = msgs[-1]["content"]
+        assert "Solve this problem step by step" in content
+        assert "Refiner Agent" not in content
+
+    def test_minimal_does_not_touch_judger(self):
+        args = self._args(minimal=True)
+        msgs = build_agent_message_sequential_latent_mas(
+            role="judger", question="Q", method="latent_mas", args=args,
+        )
+        content = msgs[-1]["content"]
+        # Judger prompt is unchanged — should still have the verbose framing
+        assert "Solve this problem step by step" not in content
+        assert "\\boxed" in content
+
+    def test_minimal_off_keeps_persona_prompts(self):
+        args = self._args(minimal=False)
+        msgs = build_agent_message_sequential_latent_mas(
+            role="planner", question="Q", method="latent_mas", args=args,
+        )
+        content = msgs[-1]["content"]
+        # Original verbose framing should be present
+        assert "Planner Agent" in content
+
+
 class TestConciseSuffix:
     def test_appended_when_flag_set_for_nonjudger(self):
         args = argparse.Namespace(

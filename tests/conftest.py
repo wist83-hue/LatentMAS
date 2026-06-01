@@ -75,6 +75,7 @@ def tiny_args():
         concise_nonjudger_prompt=False,
         latent_halt_on_eos=False,
         disable_thinking=False,
+        minimal_persona_prompts=False,
     )
 
 

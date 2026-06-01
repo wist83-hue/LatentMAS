@@ -211,6 +211,17 @@ def main():
             "comparable to papers that disabled thinking mode."
         ),
     )
+    parser.add_argument(
+        "--minimal_persona_prompts",
+        action="store_true",
+        help=(
+            "Replace planner/critic/refiner persona prompts with a minimal "
+            "'Solve this problem step by step' template. Designed for reasoning-"
+            "distilled models (R1-Distill etc.) whose training distribution is "
+            "incompatible with the verbose 'You are a Planner Agent' framing. "
+            "Judger prompt is unchanged."
+        ),
+    )
     # The paper's central method depends on the ridge-regressed W_a matrix
     # mapping output hidden space -> input embedding space. Default ON so
     # `--method latent_mas` is paper-faithful out of the box; opt out with

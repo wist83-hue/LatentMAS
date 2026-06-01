@@ -2,18 +2,33 @@
 _CONCISE_SUFFIX = "\n\nIMPORTANT: Reply with a single short sentence (under 20 tokens). Be concise and informative; skip preamble."
 
 
-def _apply_concise(user_prompt: str, role: str, args) -> str:
-    """Append a 'be concise' instruction for non-judger agents when the flag is set.
+def _minimal_prompt(question: str) -> str:
+    """Minimal non-judger prompt for reasoning-distilled models.
 
-    Used to give text_mas_short its best shot at packing useful content into a
-    truncated budget, and to match argmax_embed latent_mas under the same
-    prompting for an apples-to-apples comparison.
+    R1-Distill and similar models' training distribution is incompatible with
+    the verbose 'You are a Planner Agent' framing. This template looks much
+    closer to how those models were trained — a direct problem-solving prompt.
     """
+    return f"Solve this problem step by step:\n\n{question}"
+
+
+def _apply_concise(user_prompt: str, role: str, args) -> str:
+    """Append a 'be concise' instruction for non-judger agents when the flag is set."""
     if role == "judger":
         return user_prompt
     if args is None or not getattr(args, "concise_nonjudger_prompt", False):
         return user_prompt
     return user_prompt.rstrip() + _CONCISE_SUFFIX
+
+
+def _apply_minimal(role: str, question: str, args, original: str) -> str:
+    """If --minimal_persona_prompts is set and role isn't judger, replace the
+    role-specific prompt with a minimal problem-solving template."""
+    if role == "judger":
+        return original
+    if args is None or not getattr(args, "minimal_persona_prompts", False):
+        return original
+    return _minimal_prompt(question)
 
 
 def build_agent_message_sequential_latent_mas(role: str, question: str, context: str = "", method=None, args=None):
@@ -126,6 +141,7 @@ Now, reason step by step and output the final answer inside \\boxed{{YOUR_FINAL_
         else: 
             raise NotImplementedError(f"Task {args.task} not implemented in v5 judger prompt.")
         
+    user_prompt = _apply_minimal(role, question, args, user_prompt)
     user_prompt = _apply_concise(user_prompt, role, args)
     return [
         {"role": "system", "content": system_message},
@@ -350,6 +366,7 @@ Input Question: {question}
 Your response:
 """
 
+    user_content = _apply_minimal(role, question, args, user_content)
     user_content = _apply_concise(user_content, role, args)
     return [
         {"role": "system", "content": system_message},
@@ -521,6 +538,7 @@ You must reason step-by-step to solve the **provided Target Question** without o
 Now, reason step by step and present your final answer clearly at the end.
 """
 
+    user_content = _apply_minimal(role, question, args, user_content)
     user_content = _apply_concise(user_content, role, args)
     return [
         {"role": "system", "content": system_message},
@@ -705,6 +723,7 @@ Input Question: {question}
 Your response:
 """
 
+    user_content = _apply_minimal(role, question, args, user_content)
     user_content = _apply_concise(user_content, role, args)
     return [
         {"role": "system", "content": system_message},
