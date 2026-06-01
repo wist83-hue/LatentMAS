@@ -97,8 +97,10 @@ def main():
     parser.add_argument("--data_subset", choices=["all", "train", "test"], default="all",
                         help="MATH-500 only: seeded disjoint split. 'all' = full set in original order.")
     parser.add_argument("--data_seed", type=int, default=42, help="Seed for the MATH-500 train/test shuffle.")
-    parser.add_argument("--train_size", type=int, default=128, help="MATH-500 train subset size.")
-    parser.add_argument("--test_size", type=int, default=128, help="MATH-500 test subset size.")
+    parser.add_argument("--train_size", type=int, default=131, help="MATH-500 train subset size (131 = half of the 262 level-4+5 problems).")
+    parser.add_argument("--test_size", type=int, default=131, help="MATH-500 test subset size.")
+    parser.add_argument("--data_levels", type=str, default="4,5",
+                        help="MATH-500 only: comma-separated difficulty levels (1-5) to include, or 'all'. Default '4,5' (the 262 hardest, for a wider floor-ceiling gap).")
     parser.add_argument("--prompt", type=str, choices=["sequential", "hierarchical"], default="sequential", help="Multi-agent system architecture: 'sequential' or 'hierarchical'.")
 
     # other args
@@ -347,8 +349,9 @@ def main():
     elif args.task == "aime2025":
         dataset_iter = load_aime2025(split='train')
     elif args.task == "math500":
+        _levels = None if args.data_levels.strip().lower() == "all" else [int(x) for x in args.data_levels.split(",") if x.strip()]
         dataset_iter = load_math500(subset=args.data_subset, seed=args.data_seed,
-                                    train_n=args.train_size, test_n=args.test_size)
+                                    train_n=args.train_size, test_n=args.test_size, levels=_levels)
     elif args.task == "gpqa":
         dataset_iter = load_gpqa_diamond(split='test')
     elif args.task == "arc_easy":

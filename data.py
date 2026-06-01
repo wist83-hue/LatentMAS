@@ -46,18 +46,24 @@ def load_aime2024(split: str = "train", cache_dir: Optional[str] = None) -> Iter
 
 
 def load_math500(subset: str = "all", seed: int = 42, train_n: int = 128, test_n: int = 128,
-                 cache_dir: Optional[str] = None) -> Iterable[Dict]:
+                 levels: Optional[Iterable[int]] = None, cache_dir: Optional[str] = None) -> Iterable[Dict]:
     # HuggingFaceH4/MATH-500: 500-problem test subset of the MATH dataset.
-    # Fields: problem, solution, answer (clean gold), subject, level, unique_id.
+    # Fields: problem, solution, answer (clean gold), subject, level (1-5), unique_id.
     # gold is kept as raw LaTeX (NOT lowercased) — math-verify handles equivalence.
+    #
+    # `levels` optionally restricts to a set of difficulty levels BEFORE the split
+    # (e.g. {4,5} = the 262 hardest problems). math-specialized Instruct is near-
+    # ceiling on the easy levels, so the hard tail gives a wider floor↔ceiling gap.
+    # None = all levels. Level counts: 1:43 2:90 3:105 4:128 5:134.
     #
     # subset/seed give a REPLICABLE, DISJOINT train/test split (we tune prompts &
     # hyperparameters on 'train' and report final improvement on held-out 'test'):
-    #   - shuffle all 500 indices with random.Random(seed)
+    #   - shuffle the (filtered) indices with random.Random(seed)
     #   - train = shuffled[:train_n], test = shuffled[train_n:train_n+test_n]
-    # The dataset's natural order is difficulty-skewed (the first ~128 are easier),
-    # so a seeded shuffle makes train and test i.i.d. 'all' = original order (no split).
+    # The dataset's natural order is difficulty-skewed, so a seeded shuffle makes
+    # train and test i.i.d. 'all' subset = filtered set in original order (no split).
     ds = load_dataset("HuggingFaceH4/MATH-500", split="test", cache_dir=cache_dir)
+    level_set = {int(l) for l in levels} if levels is not None else None
     items = [
         {
             "question": d["problem"].strip(),
@@ -65,6 +71,7 @@ def load_math500(subset: str = "all", seed: int = 42, train_n: int = 128, test_n
             "gold": str(d["answer"]).strip(),
         }
         for d in ds
+        if level_set is None or int(d["level"]) in level_set
     ]
     if subset == "all":
         chosen = items
