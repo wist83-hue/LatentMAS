@@ -606,12 +606,12 @@ Now perform the computation below:
     elif role == "verify":
         user_content = f"""Target Question: {question}
 
-You are a Verification Agent in a sequential pipeline (strategize -> compute -> verify). You are given the problem and the prior agents' strategy and computation (which may contain mistakes or irrelevant content). Carefully check the reasoning, correct any errors, and determine the final answer.
+You are a Verification Agent in a sequential pipeline (strategize -> compute -> verify). The compute agent has already worked out a solution below; it may contain errors.
 
 Work from previous agents:
 {ctx}
 
-Reason step-by-step to verify and solve the Target Question, then output the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+Briefly check the computation's key steps and its final result. If it is correct, confirm it; if you find a clear error, fix only what is needed — do NOT redo the whole solution from scratch. Then output the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 """
 
     user_content = _apply_minimal(role, question, args, user_content)
