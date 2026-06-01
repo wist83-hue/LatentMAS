@@ -159,6 +159,43 @@ class TestConciseSuffix:
         assert "single short sentence" not in joined
 
 
+class TestSoftConcisePipelineSuffix:
+    def _args(self, **kw):
+        base = dict(model_name="Qwen/Qwen2.5-Math-7B-Instruct", task="math500", think=False,
+                    text_mas_context_length=-1, concise_nonjudger_prompt=False,
+                    concise_pipeline_prompt=False)
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def test_soft_suffix_on_compute_when_set(self):
+        msgs = build_agent_message_sequential_latent_mas(
+            role="compute", question="Q", method="latent_mas",
+            args=self._args(concise_pipeline_prompt=True))
+        joined = " ".join(m["content"] for m in msgs)
+        assert "essential steps" in joined and "single short sentence" not in joined
+
+    def test_soft_suffix_not_on_verify(self):
+        # verify is the text-producer — must keep its full prompt
+        msgs = build_agent_message_sequential_latent_mas(
+            role="verify", question="Q", method="latent_mas",
+            args=self._args(concise_pipeline_prompt=True))
+        joined = " ".join(m["content"] for m in msgs)
+        assert "essential steps" not in joined
+
+    def test_soft_wins_when_both_flags_set(self):
+        msgs = build_agent_message_sequential_latent_mas(
+            role="strategize", question="Q", method="latent_mas",
+            args=self._args(concise_pipeline_prompt=True, concise_nonjudger_prompt=True))
+        joined = " ".join(m["content"] for m in msgs)
+        assert "essential steps" in joined and "single short sentence" not in joined
+
+    def test_off_by_default(self):
+        msgs = build_agent_message_sequential_latent_mas(
+            role="compute", question="Q", method="latent_mas", args=self._args())
+        joined = " ".join(m["content"] for m in msgs)
+        assert "essential steps" not in joined
+
+
 class TestTextMasSequentialPrompts:
     def test_returns_messages(self):
         msgs = build_agent_messages_sequential_text_mas(

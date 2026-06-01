@@ -209,6 +209,16 @@ def main():
             "should be used with matching latent_mas runs for an apples-to-apples comparison."
         ),
     )
+    parser.add_argument(
+        "--concise_pipeline_prompt",
+        action="store_true",
+        help=(
+            "Append a SOFT 'be concise — essential steps only' instruction to non-producer "
+            "pipeline agents (e.g. strategize/compute), leaving the producer (verify/judger) "
+            "untouched. Frees 4096-context budget so the producer doesn't truncate. Softer "
+            "than --concise_nonjudger_prompt (which forces a single sentence)."
+        ),
+    )
     parser.add_argument("--think", action="store_true", help="Manually add think token in the prompt for LatentMAS")
     parser.add_argument(
         "--disable_thinking",

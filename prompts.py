@@ -1,6 +1,11 @@
 
 _CONCISE_SUFFIX = "\n\nIMPORTANT: Reply with a single short sentence (under 20 tokens). Be concise and informative; skip preamble."
 
+# Soft concision (for the strategize->compute->verify text-MAS pipeline): unlike the
+# blunt single-sentence suffix above, this lets the compute agent still show its
+# multi-step work — it only trims padding so the producer (verify) keeps 4096 budget.
+_CONCISE_SOFT_SUFFIX = "\n\nBe concise: give only the essential steps and the key result. Do not restate the problem or add commentary."
+
 
 def _minimal_prompt(question: str) -> str:
     """Minimal non-judger prompt for reasoning-distilled models.
@@ -13,12 +18,23 @@ def _minimal_prompt(question: str) -> str:
 
 
 def _apply_concise(user_prompt: str, role: str, args) -> str:
-    """Append a 'be concise' instruction for non-judger agents when the flag is set."""
+    """Append a 'be concise' instruction for non-(judger/verify) agents when a
+    concision flag is set. Two strengths:
+      --concise_pipeline_prompt  : SOFT (essential steps only). Frees 4096 budget
+                                   for the text-producer without crippling compute.
+      --concise_nonjudger_prompt : BLUNT (single short sentence). For short-budget
+                                   apples-to-apples latent comparisons.
+    Soft wins if both are set. Text-producers (judger/verify) always keep full prompt.
+    """
     if role in ("judger", "verify"):  # text-producers keep their full prompt
         return user_prompt
-    if args is None or not getattr(args, "concise_nonjudger_prompt", False):
+    if args is None:
         return user_prompt
-    return user_prompt.rstrip() + _CONCISE_SUFFIX
+    if getattr(args, "concise_pipeline_prompt", False):
+        return user_prompt.rstrip() + _CONCISE_SOFT_SUFFIX
+    if getattr(args, "concise_nonjudger_prompt", False):
+        return user_prompt.rstrip() + _CONCISE_SUFFIX
+    return user_prompt
 
 
 def _apply_minimal(role: str, question: str, args, original: str) -> str:
