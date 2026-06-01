@@ -113,6 +113,9 @@ class LatentMASMethod:
         past_kv: Optional[Tuple] = None
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
+        # Track non-judger persona count for --latent_thinking_brackets_global:
+        # open <think> only on the first, close </think> only before the judger.
+        _nonjudger_seen = 0
 
         for op in self.agents:
 
@@ -166,8 +169,13 @@ class LatentMASMethod:
             if agent.role != "judger":
                 prev_past_len = _past_length(past_kv)
 
-                # --latent_thinking_brackets implies <think> opening; --think also does.
-                _open_think = self.args.think or getattr(self.args, "latent_thinking_brackets", False)
+                # --latent_thinking_brackets opens per-persona; --think also does;
+                # --latent_thinking_brackets_global opens once on the first non-judger.
+                _is_first_nonjudger = (_nonjudger_seen == 0)
+                _nonjudger_seen += 1
+                _open_per = self.args.think or getattr(self.args, "latent_thinking_brackets", False)
+                _open_global = bool(getattr(self.args, "latent_thinking_brackets_global", False)) and _is_first_nonjudger
+                _open_think = _open_per or _open_global
                 if _open_think:
                         wrapped_prompts = [f"{prompt}<think>" for prompt in prompts]
                 else:
@@ -236,6 +244,14 @@ class LatentMASMethod:
                         }
                     )
             else:
+
+                # Close the single global <think> block (if --latent_thinking_brackets_global)
+                # right before the judger's prompt prefill.
+                if (getattr(self.args, "latent_thinking_brackets_global", False)
+                        and past_kv is not None and _nonjudger_seen > 0):
+                    past_kv = self.model.append_tokens_to_cache(
+                        "</think>\n\n", past_kv, batch_size,
+                    )
 
                 any_latent = self.latent_steps > 0 or any(v > 0 for v in self.latent_steps_map.values())
                 past_for_decoding = past_kv if any_latent else None

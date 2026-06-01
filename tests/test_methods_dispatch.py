@@ -126,6 +126,26 @@ class TestLatentThinkingBrackets:
                 if a["role"] != "judger":
                     assert a["input"].endswith("<think>")
 
+    def test_brackets_global_only_first_persona_opens(self, tiny_args, tiny_model_wrapper):
+        """--latent_thinking_brackets_global opens <think> only on the first non-judger."""
+        from methods.latent_mas import LatentMASMethod
+        args = copy.copy(tiny_args)
+        args.method = "latent_mas"
+        args.task = "gsm8k"
+        args.latent_thinking_brackets_global = True
+        method = LatentMASMethod(
+            tiny_model_wrapper, latent_steps=2, judger_max_new_tokens=4,
+            generate_bs=2, args=args,
+        )
+        results = method.run_batch(_items())
+        for r in results:
+            non_judger = [a for a in r["agents"] if a["role"] != "judger"]
+            assert len(non_judger) >= 2
+            # Only the first should have <think> appended
+            assert non_judger[0]["input"].endswith("<think>")
+            for a in non_judger[1:]:
+                assert not a["input"].endswith("<think>")
+
 
 class TestTextMasShortCap:
     def test_short_cap_runs_end_to_end(self, tiny_args, tiny_model_wrapper):

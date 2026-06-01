@@ -77,6 +77,7 @@ def tiny_args():
         disable_thinking=False,
         minimal_persona_prompts=False,
         latent_thinking_brackets=False,
+        latent_thinking_brackets_global=False,
     )
 
 

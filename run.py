@@ -234,6 +234,18 @@ def main():
             "loop. Judger is unaffected."
         ),
     )
+    parser.add_argument(
+        "--latent_thinking_brackets_global",
+        action="store_true",
+        help=(
+            "Wrap the ENTIRE multi-agent latent sequence in a SINGLE <think>...</think> "
+            "block (rather than one per persona). Opens '<think>' once at the start "
+            "of the first non-judger persona, closes '</think>\\n\\n' once before "
+            "the judger's prompt. Matches R1's training distribution of one "
+            "thinking block per response. Mutually exclusive with "
+            "--latent_thinking_brackets (per-persona)."
+        ),
+    )
     # The paper's central method depends on the ridge-regressed W_a matrix
     # mapping output hidden space -> input embedding space. Default ON so
     # `--method latent_mas` is paper-faithful out of the box; opt out with
