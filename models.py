@@ -392,8 +392,24 @@ class ModelWrapper:
         ablation = getattr(self.args, "latent_ablation", "none") if self.args else "none"
         decode_debug = bool(getattr(self.args, "latent_decode_debug", False)) if self.args else False
         ood_debug = bool(getattr(self.args, "latent_ood_debug", False)) if self.args else False
-        feedback_mode = getattr(self.args, "latent_feedback_mode", "w_a") if self.args else "w_a"
-        soft_temp = float(getattr(self.args, "latent_soft_embed_temperature", 1.0) or 1.0) if self.args else 1.0
+        feedback_mode = getattr(self.args, "latent_feedback_mode", "auto") if self.args else "auto"
+        soft_temp = float(getattr(self.args, "latent_soft_embed_temperature", 2.0) or 2.0) if self.args else 2.0
+        # Resolve 'auto' to w_a (untied) or soft_embed (tied) based on the model's
+        # config.tie_word_embeddings. On tied models the W_a ridge regression
+        # degenerates to identity, leaving only scalar_mean to bridge the
+        # ~100x magnitude gap — empirically soft_embed wins decisively there.
+        if feedback_mode == "auto":
+            _resolve_src = self.HF_model if hasattr(self, "HF_model") else self.model
+            _cfg = getattr(_resolve_src, "config", None)
+            _tied = bool(getattr(_cfg, "tie_word_embeddings", False)) if _cfg else False
+            feedback_mode = "soft_embed" if _tied else "w_a"
+            if not getattr(self, "_auto_feedback_announced", False):
+                print(
+                    f"[latent] --latent_feedback_mode=auto resolved to '{feedback_mode}' "
+                    f"(tie_word_embeddings={_tied})",
+                    flush=True,
+                )
+                self._auto_feedback_announced = True
         halt_on_eos = bool(getattr(self.args, "latent_halt_on_eos", False)) if self.args else False
         eos_id = getattr(self.tokenizer, "eos_token_id", None) if halt_on_eos else None
 

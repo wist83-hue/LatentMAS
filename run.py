@@ -149,24 +149,31 @@ def main():
     )
     parser.add_argument(
         "--latent_feedback_mode",
-        choices=["w_a", "argmax_embed", "soft_embed", "coconut"],
-        default="w_a",
+        choices=["auto", "w_a", "argmax_embed", "soft_embed", "coconut"],
+        default="auto",
         help=(
             "How to convert the per-step hidden state into the next inputs_embed. "
-            "'w_a' (default): paper's hidden @ W_a, then rescale per --latent_norm_mode. "
-            "'argmax_embed': E_in[argmax(lm_head(hidden))] - hard-discretize to the model's "
-            "own predicted next token and re-embed it. Naturally lives in the input-embedding "
-            "manifold the model expects. "
-            "'soft_embed': softmax(lm_head(hidden)/tau) @ E_in - expected E_in under the "
-            "predicted next-token distribution. Smoother than argmax. "
+            "'auto' (default): pick w_a for untied embeddings, soft_embed (τ=2) for "
+            "tied — captures the empirical finding that w_a degenerates to identity "
+            "on tied embedding models (Qwen3-4B, smaller Qwen3 variants) where "
+            "soft_embed performs significantly better. "
+            "'w_a' (paper-faithful): hidden @ W_a, then rescale per --latent_norm_mode. "
+            "'argmax_embed': E_in[argmax(lm_head(hidden))] — hard-discretize to the "
+            "model's own predicted next token and re-embed it. "
+            "'soft_embed': softmax(lm_head(hidden)/tau) @ E_in — expected E_in under "
+            "the predicted next-token distribution. "
             "'coconut': raw hidden, no transformation. Original Coconut formulation."
         ),
     )
     parser.add_argument(
         "--latent_soft_embed_temperature",
         type=float,
-        default=1.0,
-        help="Temperature for --latent_feedback_mode=soft_embed. Lower = more peaky (closer to argmax).",
+        default=2.0,
+        help=(
+            "Temperature for soft_embed (or 'auto' when it resolves to soft_embed). "
+            "Lower = more peaky (closer to argmax_embed). Default 2.0; empirically "
+            "best on tied Qwen3-4B."
+        ),
     )
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top_p", type=float, default=0.95)

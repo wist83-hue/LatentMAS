@@ -122,3 +122,51 @@ class TestDefaultIsBackwardCompat:
     def test_default_mode_is_w_a(self, tiny_args):
         """Existing scripts that don't set the flag should get the prior behavior."""
         assert getattr(tiny_args, "latent_feedback_mode", None) is None or tiny_args.latent_feedback_mode == "w_a"
+
+
+class TestAutoFeedbackMode:
+    def test_auto_resolves_to_soft_embed_on_tied(self, tiny_model_wrapper, tiny_args, capsys):
+        """tiny-gpt2 has tied embeddings; auto should pick soft_embed."""
+        mw = tiny_model_wrapper
+        # Sanity: tiny-gpt2 is tied
+        assert bool(mw.model.config.tie_word_embeddings) is True
+        # Clear any prior announcement so this test sees the print
+        if hasattr(mw, "_auto_feedback_announced"):
+            del mw._auto_feedback_announced
+        args = copy.copy(tiny_args)
+        args.latent_feedback_mode = "auto"
+        mw.args = args
+        ids, mask = _ids_mask(mw)
+        mw.generate_latent_batch(ids, attention_mask=mask, latent_steps=1)
+        captured = capsys.readouterr().out
+        assert "resolved to 'soft_embed'" in captured
+        assert "tie_word_embeddings=True" in captured
+
+    def test_auto_resolves_to_w_a_on_untied(self, tiny_model_wrapper, tiny_args, capsys, monkeypatch):
+        """Patch the model's config to look untied; auto should pick w_a."""
+        mw = tiny_model_wrapper
+        if hasattr(mw, "_auto_feedback_announced"):
+            del mw._auto_feedback_announced
+        monkeypatch.setattr(mw.model.config, "tie_word_embeddings", False)
+        args = copy.copy(tiny_args)
+        args.latent_feedback_mode = "auto"
+        mw.args = args
+        ids, mask = _ids_mask(mw)
+        mw.generate_latent_batch(ids, attention_mask=mask, latent_steps=1)
+        captured = capsys.readouterr().out
+        assert "resolved to 'w_a'" in captured
+        assert "tie_word_embeddings=False" in captured
+
+    def test_auto_only_announces_once(self, tiny_model_wrapper, tiny_args, capsys):
+        mw = tiny_model_wrapper
+        if hasattr(mw, "_auto_feedback_announced"):
+            del mw._auto_feedback_announced
+        args = copy.copy(tiny_args)
+        args.latent_feedback_mode = "auto"
+        mw.args = args
+        ids, mask = _ids_mask(mw)
+        # Two consecutive runs share the same wrapper; should announce once
+        mw.generate_latent_batch(ids, attention_mask=mask, latent_steps=1)
+        mw.generate_latent_batch(ids, attention_mask=mask, latent_steps=1)
+        captured = capsys.readouterr().out
+        assert captured.count("--latent_feedback_mode=auto resolved") == 1

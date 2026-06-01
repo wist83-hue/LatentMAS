@@ -70,7 +70,7 @@ def tiny_args():
         latent_decode_debug=False,
         latent_ood_debug=False,
         latent_feedback_mode="w_a",
-        latent_soft_embed_temperature=1.0,
+        latent_soft_embed_temperature=2.0,
         text_mas_nonjudger_max_tokens=0,
         concise_nonjudger_prompt=False,
         latent_halt_on_eos=False,
