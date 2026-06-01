@@ -14,7 +14,7 @@ def _minimal_prompt(question: str) -> str:
 
 def _apply_concise(user_prompt: str, role: str, args) -> str:
     """Append a 'be concise' instruction for non-judger agents when the flag is set."""
-    if role == "judger":
+    if role in ("judger", "verify"):  # text-producers keep their full prompt
         return user_prompt
     if args is None or not getattr(args, "concise_nonjudger_prompt", False):
         return user_prompt
@@ -22,9 +22,9 @@ def _apply_concise(user_prompt: str, role: str, args) -> str:
 
 
 def _apply_minimal(role: str, question: str, args, original: str) -> str:
-    """If --minimal_persona_prompts is set and role isn't judger, replace the
-    role-specific prompt with a minimal problem-solving template."""
-    if role == "judger":
+    """If --minimal_persona_prompts is set and role isn't a text-producer, replace
+    the role-specific prompt with a minimal problem-solving template."""
+    if role in ("judger", "verify"):
         return original
     if args is None or not getattr(args, "minimal_persona_prompts", False):
         return original
@@ -78,7 +78,7 @@ Now, output your refined plan below:
 """
     
     elif role == "judger":
-        if args.task in ['gsm8k', 'aime2024', 'aime2025']:
+        if args.task in ['gsm8k', 'aime2024', 'aime2025', 'math500']:
             user_prompt = f"""
 Target Question: {question}
 
@@ -138,9 +138,36 @@ Your final answer must be selected from 1 and 2. For example \\boxed{{1}} or \\b
 Now, reason step by step and output the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 """
 
-        else: 
+        else:
             raise NotImplementedError(f"Task {args.task} not implemented in v5 judger prompt.")
-        
+
+    # --- Math persona set: strategize -> compute -> verify ---
+    # strategize/compute do latent steps (no text emitted); verify is the
+    # text-producer (TEXT_PRODUCER_ROLES) that emits the final \boxed answer.
+    elif role == "strategize":
+        user_prompt = f"""You are a Strategy Agent. Given a math problem, devise a clear high-level approach: identify the key idea(s), which method or theorem to apply, and the sequence of steps needed. Do NOT carry out the arithmetic or state a final answer.
+
+Question: {question}
+
+Now outline your solution strategy below:
+"""
+
+    elif role == "compute":
+        user_prompt = f"""You are a Computation Agent. A solution strategy for the problem is provided in latent KV representation. Execute that strategy: carry out the algebra and arithmetic step-by-step, tracking intermediate results, to work toward the answer.
+
+Question: {question}
+
+Now perform the computation below:
+"""
+
+    elif role == "verify":
+        user_prompt = f"""Target Question: {question}
+
+You are a Verification Agent. You are provided with latent information (a strategy and a computation for this problem) for reference; it may contain mistakes or irrelevant content. Carefully check the reasoning, correct any errors, and determine the final answer.
+
+Reason step-by-step to verify and solve the Target Question, then output the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+"""
+
     user_prompt = _apply_minimal(role, question, args, user_prompt)
     user_prompt = _apply_concise(user_prompt, role, args)
     return [
@@ -156,7 +183,7 @@ def build_agent_message_hierarchical_latent_mas(role: str, question: str, contex
     assert method in ["latent_mas"], "this prompt only for latent_mas method"
     assert "qwen" in args.model_name.lower(), "this prompt only for qwen models"
 
-    if args.task in ['gsm8k', 'aime2024', 'aime2025']:
+    if args.task in ['gsm8k', 'aime2024', 'aime2025', 'math500']:
         if role == "planner":
             user_content = f"""
 You are a math agent. Given the input question, reason step-by-step and put the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
@@ -447,7 +474,7 @@ Now, output your refined plan below:
     elif role == "judger":
         task = getattr(args, "task", None)
 
-        if task in ["gsm8k", "aime2024", "aime2025"]:
+        if task in ["gsm8k", "aime2024", "aime2025", "math500"]:
             user_content = f"""
 Target Question: {question}
 
@@ -538,6 +565,39 @@ You must reason step-by-step to solve the **provided Target Question** without o
 Now, reason step by step and present your final answer clearly at the end.
 """
 
+    # --- Math persona set (text MAS): strategize -> compute -> verify ---
+    # Each agent's text output is appended to the running context; the next agent
+    # sees it via {ctx}. verify is the text-producer that emits the final answer.
+    elif role == "strategize":
+        user_content = f"""You are a Strategy Agent in a sequential pipeline (strategize -> compute -> verify). Given a math problem, devise a clear high-level approach: identify the key idea(s), which method or theorem to apply, and the sequence of steps needed. Do NOT carry out the arithmetic or state a final answer.
+
+Question: {question}
+
+Now outline your solution strategy below:
+"""
+
+    elif role == "compute":
+        user_content = f"""You are a Computation Agent in a sequential pipeline (strategize -> compute -> verify). You are given the problem and a strategy from the Strategy Agent. Execute that strategy: carry out the algebra and arithmetic step-by-step, tracking intermediate results, to work toward the answer.
+
+Question: {question}
+
+Strategy from the previous agent:
+{ctx}
+
+Now perform the computation below:
+"""
+
+    elif role == "verify":
+        user_content = f"""Target Question: {question}
+
+You are a Verification Agent in a sequential pipeline (strategize -> compute -> verify). You are given the problem and the prior agents' strategy and computation (which may contain mistakes or irrelevant content). Carefully check the reasoning, correct any errors, and determine the final answer.
+
+Work from previous agents:
+{ctx}
+
+Reason step-by-step to verify and solve the Target Question, then output the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
+"""
+
     user_content = _apply_minimal(role, question, args, user_content)
     user_content = _apply_concise(user_content, role, args)
     return [
@@ -553,7 +613,7 @@ def build_agent_messages_hierarchical_text_mas(role: str, question: str, context
     assert method in ["text_mas"], "this prompt only for text_mas method"
     assert "qwen" in args.model_name.lower(), "this prompt only for qwen models"
     
-    if args.task in ['gsm8k', 'aime2024', 'aime2025']:
+    if args.task in ['gsm8k', 'aime2024', 'aime2025', 'math500']:
         if role == "planner":
             user_content = f"""
 You are a math agent. Given the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
@@ -740,7 +800,7 @@ def build_agent_messages_single_agent(question: str, args=None):
 
     task = args.task
 
-    if task in ["gsm8k", "aime2024", "aime2025"]:
+    if task in ["gsm8k", "aime2024", "aime2025", "math500"]:
         user_content = f"""
 Target Question: {question}
 

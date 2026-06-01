@@ -22,11 +22,23 @@ _DEFAULT_NAMES = {
     "critic": "Critic",
     "refiner": "Refiner",
     "judger": "Judger",
+    # Math-solving persona set (strategize -> compute -> verify). 'verify' is a
+    # text-producer like 'judger' (see TEXT_PRODUCER_ROLES in latent_mas.py): it
+    # emits the final \boxed answer; strategize/compute do latent steps only.
+    "strategize": "Strategist",
+    "compute": "Calculator",
+    "verify": "Verifier",
 }
 
 # Closed set: each role must have a prompt template in prompts.py. Adding a
 # new role requires extending build_agent_message_sequential_latent_mas etc.
 KNOWN_ROLES = frozenset(_DEFAULT_NAMES.keys())
+
+# Roles that produce the final TEXT answer rather than feeding the next agent.
+# In latent_mas they decode with the prior agents' latent KV as context; in
+# text_mas they set final_texts instead of appending to the running context.
+# The last agent in a pipeline should be one of these.
+TEXT_PRODUCER_ROLES = ("judger", "verify")
 
 
 def _make_agent(role: str) -> Agent:
@@ -89,4 +101,4 @@ def parse_pipeline(spec: str) -> List[PipelineOp]:
     return out
 
 
-__all__ = ["Agent", "Parallel", "PipelineOp", "default_agents", "parse_pipeline"]
+__all__ = ["Agent", "Parallel", "PipelineOp", "default_agents", "parse_pipeline", "KNOWN_ROLES", "TEXT_PRODUCER_ROLES"]

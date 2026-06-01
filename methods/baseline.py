@@ -2,7 +2,7 @@ from typing import Dict, List
 
 from models import ModelWrapper
 from prompts import build_agent_messages_single_agent
-from utils import score_gsm8k, score_aime, extract_markdown_python_block, run_with_timeout
+from utils import score_gsm8k, score_aime, score_math, extract_markdown_python_block, run_with_timeout
 
 
 class BaselineMethod:
@@ -78,6 +78,10 @@ class BaselineMethod:
             elif self.task in ["aime2024", "aime2025"]:
                 gold = str(item.get("gold", "")).strip()
                 ok, pred, error_msg = score_aime(generated_text, gold)
+
+            elif self.task == "math500":
+                gold = str(item.get("gold", "")).strip()
+                ok, pred, error_msg = score_math(generated_text, gold)
 
             else:
                 gold = item.get("gold", "")

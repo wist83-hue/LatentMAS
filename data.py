@@ -1,3 +1,4 @@
+import random
 from typing import Dict, Iterable, Optional
 
 from datasets import load_dataset
@@ -42,6 +43,40 @@ def load_aime2024(split: str = "train", cache_dir: Optional[str] = None) -> Iter
             "solution": answer,
             "gold": gold,
         }
+
+
+def load_math500(subset: str = "all", seed: int = 42, train_n: int = 128, test_n: int = 128,
+                 cache_dir: Optional[str] = None) -> Iterable[Dict]:
+    # HuggingFaceH4/MATH-500: 500-problem test subset of the MATH dataset.
+    # Fields: problem, solution, answer (clean gold), subject, level, unique_id.
+    # gold is kept as raw LaTeX (NOT lowercased) — math-verify handles equivalence.
+    #
+    # subset/seed give a REPLICABLE, DISJOINT train/test split (we tune prompts &
+    # hyperparameters on 'train' and report final improvement on held-out 'test'):
+    #   - shuffle all 500 indices with random.Random(seed)
+    #   - train = shuffled[:train_n], test = shuffled[train_n:train_n+test_n]
+    # The dataset's natural order is difficulty-skewed (the first ~128 are easier),
+    # so a seeded shuffle makes train and test i.i.d. 'all' = original order (no split).
+    ds = load_dataset("HuggingFaceH4/MATH-500", split="test", cache_dir=cache_dir)
+    items = [
+        {
+            "question": d["problem"].strip(),
+            "solution": d.get("solution", str(d["answer"]).strip()),
+            "gold": str(d["answer"]).strip(),
+        }
+        for d in ds
+    ]
+    if subset == "all":
+        chosen = items
+    elif subset in ("train", "test"):
+        idx = list(range(len(items)))
+        random.Random(seed).shuffle(idx)
+        sel = idx[:train_n] if subset == "train" else idx[train_n:train_n + test_n]
+        chosen = [items[i] for i in sel]
+    else:
+        raise ValueError(f"unknown math500 subset {subset!r} (expected all/train/test)")
+    for x in chosen:
+        yield x
 
 
 def load_gpqa_diamond(split: str = "test", cache_dir: Optional[str] = None) -> Iterable[Dict]:

@@ -1,10 +1,10 @@
 from typing import Dict, List
 
-from . import default_agents
+from . import default_agents, parse_pipeline, TEXT_PRODUCER_ROLES
 from models import ModelWrapper
 # from prompts import build_agent_messages, build_agent_messages_v6, build_agent_messages_v6_text_mas
 from prompts import build_agent_messages_hierarchical_text_mas, build_agent_messages_sequential_text_mas
-from utils import score_gsm8k, score_aime, extract_markdown_python_block, run_with_timeout
+from utils import score_gsm8k, score_aime, score_math, extract_markdown_python_block, run_with_timeout
 import argparse
 
 class TextMASMethod:
@@ -24,7 +24,8 @@ class TextMASMethod:
         self.temperature = temperature
         self.top_p = top_p
         self.generate_bs = max(1, generate_bs)
-        self.agents = default_agents()
+        pipeline_spec = getattr(args, "pipeline", None) if args else None
+        self.agents = parse_pipeline(pipeline_spec) if pipeline_spec else default_agents()
         self.args = args
         self.method_name = "text_mas"
         self.task = args.task
@@ -72,7 +73,7 @@ class TextMASMethod:
             # comparison with latent_mas argmax_embed at the same K). Greedy
             # to match argmax_embed's argmax behavior.
             short_cap = int(getattr(self.args, "text_mas_nonjudger_max_tokens", 0) or 0)
-            if short_cap > 0 and agent.role != "judger":
+            if short_cap > 0 and agent.role not in TEXT_PRODUCER_ROLES:
                 cap = short_cap
                 use_greedy = True
             else:
@@ -116,7 +117,7 @@ class TextMASMethod:
                 else:
                     formatted_output = f"[{agent.name}]:\n{text_out}\n\n"
 
-                if agent.role != "judger":
+                if agent.role not in TEXT_PRODUCER_ROLES:
 
                     contexts[idx] = f"{contexts[idx]}{formatted_output}"
                     history_contexts[idx] = f"{history_contexts[idx]}{formatted_output}"
@@ -157,6 +158,10 @@ class TextMASMethod:
             elif self.task in ["aime2024", "aime2025"]:
                 gold = str(item.get("gold", "")).strip()
                 ok, pred, error_msg = score_aime(final_text, gold)
+
+            elif self.task == "math500":
+                gold = str(item.get("gold", "")).strip()
+                ok, pred, error_msg = score_math(final_text, gold)
 
             else:
                 gold = item.get("gold", "")

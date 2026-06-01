@@ -11,6 +11,7 @@ from data import (
     load_arc_challenge,
     load_gsm8k,
     load_gpqa_diamond,
+    load_math500,
     load_mbppplus,
     load_humanevalplus,
     load_medqa
@@ -90,8 +91,14 @@ def main():
     parser.add_argument("--model_name", type=str, required=True,
                         help="HF model id to load (e.g. 'Qwen/Qwen3-4B', 'casperhansen/deepseek-r1-distill-qwen-14b-awq').")
     parser.add_argument("--max_samples", type=int, default=-1, help="Number of questions to evaluate; set -1 to use all samples.")
-    parser.add_argument("--task", choices=["gsm8k", "aime2024", "aime2025", "gpqa", "arc_easy", "arc_challenge", "mbppplus", 'humanevalplus', 'medqa'], default="gsm8k",
+    parser.add_argument("--task", choices=["gsm8k", "aime2024", "aime2025", "math500", "gpqa", "arc_easy", "arc_challenge", "mbppplus", 'humanevalplus', 'medqa'], default="gsm8k",
                         help="Dataset/task to evaluate. Controls which loader is used.")
+    # MATH-500 train/test split (replicable; tune on 'train', report final on held-out 'test').
+    parser.add_argument("--data_subset", choices=["all", "train", "test"], default="all",
+                        help="MATH-500 only: seeded disjoint split. 'all' = full set in original order.")
+    parser.add_argument("--data_seed", type=int, default=42, help="Seed for the MATH-500 train/test shuffle.")
+    parser.add_argument("--train_size", type=int, default=128, help="MATH-500 train subset size.")
+    parser.add_argument("--test_size", type=int, default=128, help="MATH-500 test subset size.")
     parser.add_argument("--prompt", type=str, choices=["sequential", "hierarchical"], default="sequential", help="Multi-agent system architecture: 'sequential' or 'hierarchical'.")
 
     # other args
@@ -339,6 +346,9 @@ def main():
         dataset_iter = load_aime2024(split="train")
     elif args.task == "aime2025":
         dataset_iter = load_aime2025(split='train')
+    elif args.task == "math500":
+        dataset_iter = load_math500(subset=args.data_subset, seed=args.data_seed,
+                                    train_n=args.train_size, test_n=args.test_size)
     elif args.task == "gpqa":
         dataset_iter = load_gpqa_diamond(split='test')
     elif args.task == "arc_easy":

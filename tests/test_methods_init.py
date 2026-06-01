@@ -12,7 +12,15 @@ from methods import (
 
 class TestKnownRoles:
     def test_default_set(self):
-        assert KNOWN_ROLES == frozenset({"planner", "critic", "refiner", "judger"})
+        assert KNOWN_ROLES == frozenset({
+            "planner", "critic", "refiner", "judger",
+            "strategize", "compute", "verify",
+        })
+
+    def test_math_persona_set_parses(self):
+        out = parse_pipeline("strategize,compute,verify")
+        assert [op.role for op in out] == ["strategize", "compute", "verify"]
+        assert [op.name for op in out] == ["Strategist", "Calculator", "Verifier"]
 
 
 class TestDefaultAgents:

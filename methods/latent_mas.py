@@ -3,12 +3,15 @@ from typing import Dict, List, Optional, Tuple
 from . import default_agents, parse_pipeline, Agent, Parallel
 from models import ModelWrapper, _past_length
 from prompts import build_agent_message_sequential_latent_mas, build_agent_message_hierarchical_latent_mas
-from utils import score_gsm8k, score_aime, extract_markdown_python_block, run_with_timeout
+from utils import score_gsm8k, score_aime, score_math, extract_markdown_python_block, run_with_timeout
 import torch
 import argparse
 from vllm import SamplingParams
 
 from transformers.cache_utils import Cache
+
+from . import TEXT_PRODUCER_ROLES
+
 
 class LatentMASMethod:
     def __init__(
@@ -166,7 +169,7 @@ class LatentMASMethod:
                 batch_messages, add_generation_prompt=True
             )
 
-            if agent.role != "judger":
+            if agent.role not in TEXT_PRODUCER_ROLES:
                 prev_past_len = _past_length(past_kv)
 
                 # --latent_thinking_brackets opens per-persona; --think also does;
@@ -319,10 +322,14 @@ class LatentMASMethod:
                 gold = str(item.get("gold", "")).strip()
                 ok, pred, error_msg = score_aime(final_text, gold)
 
+            elif self.task == "math500":
+                gold = str(item.get("gold", "")).strip()
+                ok, pred, error_msg = score_math(final_text, gold)
+
             else:
                 gold = item.get("gold", "")
                 ok, pred, error_msg = score_gsm8k(final_text, gold)
-            
+
             results.append(
                 {
                     "question": item["question"],
@@ -363,7 +370,7 @@ class LatentMASMethod:
                 batch_messages, add_generation_prompt=True
             )
 
-            if agent.role != "judger":
+            if agent.role not in TEXT_PRODUCER_ROLES:
                 prev_past_len = _past_length(past_kv)
 
                 # to wrap all latent thoughts from previous agents
@@ -524,7 +531,12 @@ class LatentMASMethod:
         for idx, item in enumerate(items):
             final_text = final_texts[idx]
             gold = item["gold"]
-            ok, pred, _ = score_gsm8k(final_text, gold)
+            if self.task in ["aime2024", "aime2025"]:
+                ok, pred, _ = score_aime(final_text, gold)
+            elif self.task == "math500":
+                ok, pred, _ = score_math(final_text, gold)
+            else:
+                ok, pred, _ = score_gsm8k(final_text, gold)
             results.append(
                 {
                     "question": item["question"],
