@@ -4,12 +4,12 @@
 # unchanged across modes, the judger is routing around the latent path entirely.
 source "$(dirname "$0")/_common.sh"
 
-OUT="/tmp/sweep_ablation_${MODEL//\//_}_${TASK}.csv"
+OUT="$RESULTS_DIR/sweep_ablation_${MODEL//\//_}_${TASK}.csv"
 echo "ablation,elapsed_sec,accuracy" > "$OUT"
 
 run_abl() {
     local mode="$1"
-    local log="/tmp/sweep_ablation_${MODEL//\//_}_${mode}.log"
+    local log="$RESULTS_DIR/sweep_ablation_${MODEL//\//_}_${mode}.log"
     echo "[$(date +%T)] ablation=$mode START"
     python run.py --method latent_mas --task "$TASK" --max_samples "$N" \
         --max_new_tokens "$MAX_NEW" --model_name "$MODEL" --generate_bs "$BS" \

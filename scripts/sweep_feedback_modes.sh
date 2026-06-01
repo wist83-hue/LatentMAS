@@ -4,12 +4,12 @@
 # AND baseline on Qwen3-4B GSM8K (0.94 vs 0.78 vs 0.89).
 source "$(dirname "$0")/_common.sh"
 
-OUT="/tmp/sweep_feedback_${MODEL//\//_}_${TASK}.csv"
+OUT="$RESULTS_DIR/sweep_feedback_${MODEL//\//_}_${TASK}.csv"
 echo "label,elapsed_sec,accuracy" > "$OUT"
 
 run_mode() {
     local label="$1"; shift
-    local log="/tmp/sweep_feedback_${MODEL//\//_}_${label}.log"
+    local log="$RESULTS_DIR/sweep_feedback_${MODEL//\//_}_${label}.log"
     echo "[$(date +%T)] $label START"
     python run.py --method latent_mas --task "$TASK" --max_samples "$N" \
         --max_new_tokens "$MAX_NEW" --model_name "$MODEL" --generate_bs "$BS" \

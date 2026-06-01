@@ -4,12 +4,12 @@
 # accuracy-vs-time tradeoffs at a given config.
 source "$(dirname "$0")/_common.sh"
 
-OUT="/tmp/headlines_${MODEL//\//_}_${TASK}.csv"
+OUT="$RESULTS_DIR/headlines_${MODEL//\//_}_${TASK}.csv"
 echo "method,elapsed_sec,accuracy,correct" > "$OUT"
 
 run_cell() {
     local label="$1"; shift
-    local log="/tmp/headlines_${MODEL//\//_}_${TASK}_${label}.log"
+    local log="$RESULTS_DIR/headlines_${MODEL//\//_}_${TASK}_${label}.log"
     echo "[$(date +%T)] $label START"
     python run.py --task "$TASK" --max_samples "$N" --max_new_tokens "$MAX_NEW" \
         --model_name "$MODEL" --generate_bs "$BS" "$@" > "$log" 2>&1

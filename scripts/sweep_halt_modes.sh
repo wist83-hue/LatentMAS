@@ -5,7 +5,7 @@
 # Halt modes: none / velocity (thr=5.0) / entropy (thr=4.0) / argmax-stable / kl
 source "$(dirname "$0")/_common.sh"
 
-OUT="/tmp/sweep_halt_${MODEL//\//_}_${TASK}.csv"
+OUT="$RESULTS_DIR/sweep_halt_${MODEL//\//_}_${TASK}.csv"
 echo "label,elapsed_sec,accuracy" > "$OUT"
 
 # K should be ample enough that early-halt can fire (default K=100 for the sweep).
@@ -13,7 +13,7 @@ echo "label,elapsed_sec,accuracy" > "$OUT"
 
 run_halt() {
     local label="$1"; shift
-    local log="/tmp/sweep_halt_${MODEL//\//_}_${label}.log"
+    local log="$RESULTS_DIR/sweep_halt_${MODEL//\//_}_${label}.log"
     echo "[$(date +%T)] $label START"
     python run.py --method latent_mas --task "$TASK" --max_samples "$N" \
         --max_new_tokens "$MAX_NEW" --model_name "$MODEL" --generate_bs "$BS" \

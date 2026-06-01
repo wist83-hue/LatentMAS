@@ -11,6 +11,7 @@
 #   K            default: 20  (latent_steps where applicable)
 #   BS           default: 8
 #   MAX_NEW      default: 2048
+#   RESULTS_DIR  default: <repo>/results  (persistent; never /tmp)
 
 set -uo pipefail
 : "${CONDA_BASE:=$HOME/anaconda3}"
@@ -23,6 +24,13 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 export HF_HOME
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "$REPO_DIR"
+
+# Persistent output dir for CSVs + per-cell logs. Deliberately NOT /tmp:
+# /tmp is cleared on reboot and a power outage once wiped a full overnight
+# sweep's results. Override RESULTS_DIR to relocate. (results/ is gitignored.)
+: "${RESULTS_DIR:=$REPO_DIR/results}"
+mkdir -p "$RESULTS_DIR"
+export RESULTS_DIR
 
 : "${MODEL:=Qwen/Qwen3-4B}"
 : "${TASK:=gsm8k}"

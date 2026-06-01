@@ -11,6 +11,9 @@ huggingface/
 # Claude session metadata
 .claude/
 
+# Experiment outputs (persistent; survive /tmp wipe on reboot)
+results/
+
 # Local env
 .env
 .venv/

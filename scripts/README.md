@@ -28,6 +28,7 @@ All scripts assume:
 | `K` | `20` | `--latent_steps` where applicable |
 | `BS` | `8` | `--generate_bs` |
 | `MAX_NEW` | `2048` | `--max_new_tokens` |
+| `RESULTS_DIR` | `<repo>/results` | Where CSVs + logs are written (persistent, **never `/tmp`**) |
 
 Override any of these at invocation, e.g.:
 
@@ -35,7 +36,11 @@ Override any of these at invocation, e.g.:
 MODEL=Qwen/Qwen3-8B N=128 K=40 ./scripts/run_headlines.sh
 ```
 
-Results land in `/tmp/<sweep>_<MODEL>_<TASK>.csv` with one row per cell.
+Results land in `$RESULTS_DIR/<sweep>_<MODEL>_<TASK>.csv` (default
+`results/<sweep>_…csv`) with one row per cell, plus a per-cell `.log`. The
+`results/` dir is gitignored and persists across reboots — we deliberately do
+**not** use `/tmp`, which is cleared on boot (a power outage once wiped a full
+overnight sweep that wrote there).
 
 ## Scripts
 

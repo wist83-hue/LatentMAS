@@ -10,12 +10,12 @@
 # "use shorter agent outputs."
 source "$(dirname "$0")/_common.sh"
 
-OUT="/tmp/compare_short_${MODEL//\//_}_${TASK}.csv"
+OUT="$RESULTS_DIR/compare_short_${MODEL//\//_}_${TASK}.csv"
 echo "label,concise,elapsed_sec,accuracy" > "$OUT"
 
 run_cell() {
     local label="$1" concise="$2"; shift 2
-    local log="/tmp/compare_short_${MODEL//\//_}_${label}_c${concise}.log"
+    local log="$RESULTS_DIR/compare_short_${MODEL//\//_}_${label}_c${concise}.log"
     local extra=""
     [ "$concise" = "y" ] && extra="--concise_nonjudger_prompt"
     echo "[$(date +%T)] $label concise=$concise START"
