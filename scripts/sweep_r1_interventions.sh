@@ -1,9 +1,9 @@
 #!/bin/bash
-# R1-Distill-Qwen-7B intervention sweep (cells A-J), GSM8K, n=64, bs=4, seed=42.
+# R1-Distill-Qwen-7B intervention sweep (cells A-K), GSM8K, n=64, bs=4, seed=42.
 #
 # Rebuilt after a power outage wiped the original /tmp chain scripts mid-run
 # (the sweep had only just started cells A-E). This is the consolidated,
-# self-contained version: all 10 cells in one script, no inter-process PID
+# self-contained version: all 11 cells in one script, no inter-process PID
 # chaining, and outputs written to a PERSISTENT results/ dir rather than /tmp
 # (which the reboot cleared).
 #
@@ -18,6 +18,10 @@
 #   H single-persona + brackets + minimal     -> maximal stack
 #   I default + GLOBAL <think> wrap + argmax  -> one thinking block over all 3 personas
 #   J global brackets + minimal               -> cleanest "R1-friendly" combo
+#   K default + argmax K=20 (no interventions)-> the LATENT BASELINE; the control
+#                                                C-J each perturb one dim of. Every
+#                                                intervention's effect is measured
+#                                                relative to K (~0.766), not cell A.
 #
 # Reference (prior measurements):
 #   baseline 0.844 | default+w_a K=20 0.703 | default+argmax K=20 0.766 | default+soft_embed K=20 0.719
@@ -90,6 +94,12 @@ run_cell I_global_brackets_argmax_K20 "default pipeline + GLOBAL brackets + argm
 # J: global brackets + minimal
 run_cell J_global_brackets_minimal_argmax_K20 "global brackets + minimal prompts + argmax_embed K=20" \
     $COMMON_LATENT --latent_thinking_brackets_global --minimal_persona_prompts
+
+# K: latent baseline -- full pipeline, full prompts, no brackets. The control
+# for C-J: plain latent_mas with no intervention. Compare every other latent
+# cell against THIS (~0.766), not against cell A (the no-latent baseline).
+run_cell K_latent_baseline "latent baseline: full pipeline + full prompts + argmax_embed K=20, no brackets" \
+    $COMMON_LATENT
 
 echo ""
 echo "=== FULL R1-Distill-Qwen-7B GSM8K interventions matrix ==="
