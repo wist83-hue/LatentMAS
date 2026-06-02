@@ -17,16 +17,18 @@ def _minimal_prompt(question: str) -> str:
     return f"Solve this problem step by step:\n\n{question}"
 
 
-def _apply_concise(user_prompt: str, role: str, args) -> str:
-    """Append a 'be concise' instruction for non-(judger/verify) agents when a
-    concision flag is set. Two strengths:
+def _apply_concise(user_prompt: str, role: str, args, is_producer: bool = False) -> str:
+    """Append a 'be concise' instruction for non-producer agents when a concision
+    flag is set. Two strengths:
       --concise_pipeline_prompt  : SOFT (essential steps only). Frees 4096 budget
                                    for the text-producer without crippling compute.
       --concise_nonjudger_prompt : BLUNT (single short sentence). For short-budget
                                    apples-to-apples latent comparisons.
-    Soft wins if both are set. Text-producers (judger/verify) always keep full prompt.
+    Soft wins if both are set. The text-PRODUCER always keeps its full prompt —
+    identified by role (judger/verify) OR by position (is_producer=True, set for the
+    LAST agent in the pipeline, e.g. compute in a 2-persona strategize->compute DAG).
     """
-    if role in ("judger", "verify"):  # text-producers keep their full prompt
+    if role in ("judger", "verify") or is_producer:  # producers keep full prompt
         return user_prompt
     if args is None:
         return user_prompt
@@ -417,7 +419,7 @@ Your response:
     ]
 
 
-def build_agent_messages_sequential_text_mas(role: str, question: str, context: str = "", method=None, args=None):
+def build_agent_messages_sequential_text_mas(role: str, question: str, context: str = "", method=None, args=None, is_producer: bool = False):
 
     system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
 
@@ -593,7 +595,11 @@ Now outline your solution strategy below:
 """
 
     elif role == "compute":
-        user_content = f"""You are a Computation Agent in a sequential pipeline (strategize -> compute -> verify). You are given the problem and a strategy from the Strategy Agent. Execute that strategy: carry out the algebra and arithmetic step-by-step, tracking intermediate results, to work toward the answer.
+        # compute adapts to its position: if a prior agent (strategize) supplied a
+        # strategy in ctx, execute it; if compute is the FIRST agent (e.g. a 2-persona
+        # compute->verify DAG, empty ctx), solve the problem standalone.
+        if ctx.strip():
+            user_content = f"""You are a Computation Agent in a sequential pipeline. You are given the problem and a strategy from the previous agent. Execute that strategy: carry out the algebra and arithmetic step-by-step, tracking intermediate results, to work toward the answer.
 
 Question: {question}
 
@@ -602,6 +608,17 @@ Strategy from the previous agent:
 
 Now perform the computation below:
 """
+        else:
+            user_content = f"""You are a Computation Agent. Solve the problem by carrying out the algebra and arithmetic step-by-step, tracking intermediate results, to work toward the answer.
+
+Question: {question}
+
+Now perform the computation below:
+"""
+        # When compute is the final agent (e.g. a 2-persona strategize->compute DAG),
+        # it is the text-producer and must emit the boxed answer itself.
+        if is_producer:
+            user_content = user_content.rstrip() + "\n\nThen state the final answer inside \\boxed{YOUR_FINAL_ANSWER}.\n"
 
     elif role == "verify":
         user_content = f"""Target Question: {question}
@@ -615,14 +632,14 @@ Briefly check the computation's key steps and its final result. If it is correct
 """
 
     user_content = _apply_minimal(role, question, args, user_content)
-    user_content = _apply_concise(user_content, role, args)
+    user_content = _apply_concise(user_content, role, args, is_producer=is_producer)
     return [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_content},
     ]
 
 
-def build_agent_messages_hierarchical_text_mas(role: str, question: str, context: str = "", method=None, args=None):
+def build_agent_messages_hierarchical_text_mas(role: str, question: str, context: str = "", method=None, args=None, is_producer: bool = False):
 
     system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
     

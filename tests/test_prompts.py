@@ -196,6 +196,60 @@ class TestSoftConcisePipelineSuffix:
         assert "essential steps" not in joined
 
 
+class TestComputeAsProducer:
+    """compute as the final agent (2-persona strategize->compute DAG) must box the
+    answer and be exempt from concision; as a middle agent it does neither."""
+    def _args(self):
+        # large context_length so ctx isn't truncated (default -1 drops the last char)
+        return argparse.Namespace(
+            model_name="Qwen/Qwen2.5-Math-7B-Instruct", task="math500", think=False,
+            text_mas_context_length=100000, concise_pipeline_prompt=True,
+            concise_nonjudger_prompt=False, minimal_persona_prompts=False)
+
+    def test_compute_boxes_when_producer(self):
+        msgs = build_agent_messages_sequential_text_mas(
+            role="compute", question="Q", context="strat", method="text_mas",
+            args=self._args(), is_producer=True)
+        joined = " ".join(m["content"] for m in msgs)
+        assert "YOUR_FINAL_ANSWER" in joined  # boxing instruction added
+
+    def test_compute_no_box_when_middle(self):
+        msgs = build_agent_messages_sequential_text_mas(
+            role="compute", question="Q", context="strat", method="text_mas",
+            args=self._args(), is_producer=False)
+        joined = " ".join(m["content"] for m in msgs)
+        assert "YOUR_FINAL_ANSWER" not in joined
+
+    def test_producer_exempt_from_concision(self):
+        msgs = build_agent_messages_sequential_text_mas(
+            role="compute", question="Q", context="strat", method="text_mas",
+            args=self._args(), is_producer=True)
+        joined = " ".join(m["content"] for m in msgs)
+        assert "essential steps" not in joined  # producer keeps full prompt
+
+    def test_nonproducer_strategize_still_concised(self):
+        msgs = build_agent_messages_sequential_text_mas(
+            role="strategize", question="Q", context="", method="text_mas",
+            args=self._args(), is_producer=False)
+        joined = " ".join(m["content"] for m in msgs)
+        assert "essential steps" in joined
+
+    def test_compute_standalone_when_no_prior_context(self):
+        # compute->verify DAG: compute is first, no strategy precedes it
+        msgs = build_agent_messages_sequential_text_mas(
+            role="compute", question="Q", context="", method="text_mas",
+            args=self._args(), is_producer=False)
+        joined = " ".join(m["content"] for m in msgs)
+        assert "Strategy from the previous agent" not in joined  # no dangling empty strategy
+
+    def test_compute_executes_strategy_when_context_present(self):
+        msgs = build_agent_messages_sequential_text_mas(
+            role="compute", question="Q", context="[Strategist]: do X", method="text_mas",
+            args=self._args(), is_producer=False)
+        joined = " ".join(m["content"] for m in msgs)
+        assert "Strategy from the previous agent" in joined and "do X" in joined
+
+
 class TestTextMasSequentialPrompts:
     def test_returns_messages(self):
         msgs = build_agent_messages_sequential_text_mas(

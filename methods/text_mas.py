@@ -40,7 +40,12 @@ class TextMASMethod:
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
 
-        for agent in self.agents:
+        for agent_idx, agent in enumerate(self.agents):
+
+            # The LAST agent in the pipeline is the text-producer: it emits the final
+            # answer instead of feeding context (so a pipeline can end in any role,
+            # e.g. compute in a 2-persona strategize->compute DAG, not just judger/verify).
+            is_producer = (agent_idx == len(self.agents) - 1)
 
             if self.args.prompt == "hierarchical":
                 batch_messages = [
@@ -50,6 +55,7 @@ class TextMASMethod:
                         context=contexts[idx],
                         method=self.method_name,
                         args=self.args,
+                        is_producer=is_producer,
                     )
                     for idx, item in enumerate(items)
                 ]
@@ -61,6 +67,7 @@ class TextMASMethod:
                         context=contexts[idx],
                         method=self.method_name,
                         args=self.args,
+                        is_producer=is_producer,
                     )
                     for idx, item in enumerate(items)
                 ]
@@ -73,7 +80,7 @@ class TextMASMethod:
             # comparison with latent_mas argmax_embed at the same K). Greedy
             # to match argmax_embed's argmax behavior.
             short_cap = int(getattr(self.args, "text_mas_nonjudger_max_tokens", 0) or 0)
-            if short_cap > 0 and agent.role not in TEXT_PRODUCER_ROLES:
+            if short_cap > 0 and not is_producer:
                 cap = short_cap
                 use_greedy = True
             else:
@@ -117,7 +124,7 @@ class TextMASMethod:
                 else:
                     formatted_output = f"[{agent.name}]:\n{text_out}\n\n"
 
-                if agent.role not in TEXT_PRODUCER_ROLES:
+                if not is_producer:
 
                     contexts[idx] = f"{contexts[idx]}{formatted_output}"
                     history_contexts[idx] = f"{history_contexts[idx]}{formatted_output}"
