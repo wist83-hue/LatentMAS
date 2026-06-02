@@ -101,6 +101,10 @@ def main():
     parser.add_argument("--test_size", type=int, default=131, help="MATH-500 test subset size.")
     parser.add_argument("--data_levels", type=str, default="4,5",
                         help="MATH-500 only: comma-separated difficulty levels (1-5) to include, or 'all'. Default '4,5' (the 262 hardest, for a wider floor-ceiling gap).")
+    parser.add_argument("--data_index", type=int, default=-1,
+                        help="MATH-500 only: if >=0, run ONLY the i-th problem of the (filtered) subset. For single-problem debugging.")
+    parser.add_argument("--greedy", action="store_true",
+                        help="Greedy (deterministic argmax) decoding instead of sampling — for reproducible debugging / no-op verification.")
     parser.add_argument("--prompt", type=str, choices=["sequential", "hierarchical"], default="sequential", help="Multi-agent system architecture: 'sequential' or 'hierarchical'.")
 
     # other args
@@ -362,7 +366,8 @@ def main():
     elif args.task == "math500":
         _levels = None if args.data_levels.strip().lower() == "all" else [int(x) for x in args.data_levels.split(",") if x.strip()]
         dataset_iter = load_math500(subset=args.data_subset, seed=args.data_seed,
-                                    train_n=args.train_size, test_n=args.test_size, levels=_levels)
+                                    train_n=args.train_size, test_n=args.test_size, levels=_levels,
+                                    pick_index=args.data_index)
     elif args.task == "gpqa":
         dataset_iter = load_gpqa_diamond(split='test')
     elif args.task == "arc_easy":

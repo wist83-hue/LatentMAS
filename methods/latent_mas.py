@@ -346,6 +346,7 @@ class LatentMASMethod:
                     temperature=self.temperature,
                     top_p=self.top_p,
                     past_key_values=past_for_decoding,
+                    do_sample=not bool(getattr(self.args, "greedy", False)),
                 )
                 for idx in range(batch_size):
                     final_text = generated_batch[idx].strip()

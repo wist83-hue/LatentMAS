@@ -45,8 +45,8 @@ LEVELS="${LEVELS:-4,5}"
 TRAIN_SIZE="${TRAIN_SIZE:-131}"
 TEST_SIZE="${TEST_SIZE:-131}"
 MAX_NEW="${MAX_NEW:-3072}"      # = floor_instruct's budget; --latent_only keeps it (see header)
-BS="${BS:-2}"
-K_VALUES="${K_VALUES:-5 10 20 40}"
+BS="${BS:-4}"      # match floor_instruct's generate_bs=4 (same as the baseline run)
+K_VALUES="${K_VALUES:-0 5 10 20 40 80 160}"   # K=0 = no-op control (--latent_only: no past → reduces to single-agent baseline; for 'solve' == floor_instruct)
 OUT=/home/bill/src/LatentMAS/results/math500_${NAME}
 mkdir -p "$OUT"
 CSV="$OUT/math500_${NAME}_${SUBSET}_results.csv"

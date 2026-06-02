@@ -52,6 +52,7 @@ class BaselineMethod:
                 max_new_tokens=self.max_new_tokens,
                 temperature=self.temperature,
                 top_p=self.top_p,
+                do_sample=not bool(getattr(self.args, "greedy", False)),
             )
 
         results: List[Dict] = []

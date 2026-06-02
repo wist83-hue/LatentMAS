@@ -46,7 +46,8 @@ def load_aime2024(split: str = "train", cache_dir: Optional[str] = None) -> Iter
 
 
 def load_math500(subset: str = "all", seed: int = 42, train_n: int = 128, test_n: int = 128,
-                 levels: Optional[Iterable[int]] = None, cache_dir: Optional[str] = None) -> Iterable[Dict]:
+                 levels: Optional[Iterable[int]] = None, pick_index: int = -1,
+                 cache_dir: Optional[str] = None) -> Iterable[Dict]:
     # HuggingFaceH4/MATH-500: 500-problem test subset of the MATH dataset.
     # Fields: problem, solution, answer (clean gold), subject, level (1-5), unique_id.
     # gold is kept as raw LaTeX (NOT lowercased) — math-verify handles equivalence.
@@ -82,6 +83,8 @@ def load_math500(subset: str = "all", seed: int = 42, train_n: int = 128, test_n
         chosen = [items[i] for i in sel]
     else:
         raise ValueError(f"unknown math500 subset {subset!r} (expected all/train/test)")
+    if pick_index is not None and pick_index >= 0:
+        chosen = chosen[pick_index:pick_index + 1]  # single problem (debugging)
     for x in chosen:
         yield x
 
