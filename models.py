@@ -327,6 +327,70 @@ class ModelWrapper:
             generations.append(text)
         return generations, outputs.past_key_values
 
+    @torch.no_grad()
+    def generate_text_with_latent_suffix_batch(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        latent_vecs: torch.Tensor,
+        *,
+        max_new_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        do_sample: bool = True,
+    ) -> Tuple[List[str], Optional[Tuple]]:
+        """Generate with the K latent vectors placed INSIDE the producer's turn.
+
+        Embeds `input_ids` (the producer prompt, ending in `<|im_start|>assistant\\n`
+        from add_generation_prompt), then appends `latent_vecs` [B, K, D] as soft
+        embeddings right after it, then generates. So the sequence is
+        [prompt ... assistant\\n][K latent vecs][generation] — the latent sits at
+        positions [P, P+K) where it was generated (start of an assistant turn),
+        and gets freshly RoPE'd in producer context (no KV transplant / re-basing).
+
+        Contrast with the `--latent_only` KV path, which prepends the latent KV at
+        positions [0, K) BEFORE the opening `<|im_start|>` (off-distribution for
+        Qwen, which never has content before conversation start).
+
+        Tokenizer is left-padded, so appending on the right keeps the real prompt
+        and the latent contiguous; the attention mask gives the latent positions
+        right after the real prompt. With `inputs_embeds`, HF `generate` returns
+        only the newly generated tokens in `outputs.sequences`.
+        """
+        if latent_vecs is None or latent_vecs.dim() != 3:
+            raise ValueError("latent_vecs must be a [B, K, D] tensor")
+        embed_layer = self.model.get_input_embeddings()
+        prompt_embeds = embed_layer(input_ids)  # [B, P, D]
+        latent_vecs = latent_vecs.to(dtype=prompt_embeds.dtype, device=prompt_embeds.device)
+        K = latent_vecs.shape[1]
+        combined_embeds = torch.cat([prompt_embeds, latent_vecs], dim=1)  # [B, P+K, D]
+        latent_mask = torch.ones(
+            (attention_mask.shape[0], K),
+            dtype=attention_mask.dtype,
+            device=attention_mask.device,
+        )
+        combined_mask = torch.cat([attention_mask.to(combined_embeds.device), latent_mask], dim=1)
+        gen_kwargs = dict(
+            inputs_embeds=combined_embeds,
+            attention_mask=combined_mask,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            pad_token_id=self.tokenizer.pad_token_id,
+            return_dict_in_generate=True,
+            output_scores=False,
+        )
+        if do_sample:
+            gen_kwargs["temperature"] = temperature
+            gen_kwargs["top_p"] = top_p
+        outputs = self.model.generate(**gen_kwargs)
+        # With inputs_embeds (and no input_ids), HF returns ONLY generated tokens.
+        sequences = outputs.sequences
+        generations: List[str] = []
+        for idx in range(sequences.shape[0]):
+            text = self.tokenizer.decode(sequences[idx], skip_special_tokens=True).strip()
+            generations.append(text)
+        return generations, outputs.past_key_values
+
     def tokenize_text(self, text: str) -> torch.Tensor:
         return self.tokenizer(
             text,

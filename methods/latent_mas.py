@@ -78,6 +78,14 @@ class LatentMASMethod:
         self.HF_device = args.device2
         self.latent_only = bool(getattr(args, "latent_only", False)) if args else False
         self.sequential_info_only = bool(getattr(args, "sequential_info_only", False)) if args else False
+        # --latent_in_producer_turn (#3 structural fix): place the K latent vectors
+        # INSIDE the producer's assistant turn (after <|im_start|>assistant\n),
+        # re-forwarded in producer context, instead of prepending them as KV before
+        # the opening <|im_start|>. Isolates PLACEMENT from prompt-retention.
+        self.latent_in_producer_turn = bool(getattr(args, "latent_in_producer_turn", False)) if args else False
+        # Holds the most recent non-producer agent's latent vectors [B, K, D]
+        # (input-embedding space) for structural placement by the producer.
+        self._producer_latent_vecs: Optional[torch.Tensor] = None
 
         if self.latent_only:
             self.sequential_info_only = True
@@ -261,12 +269,26 @@ class LatentMASMethod:
                     wrapped_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
 
                 k_for_agent = self.latent_steps_map.get(agent.role, self.latent_steps)
-                past_kv = self.model.generate_latent_batch(
-                    wrapped_ids,
-                    attention_mask=wrapped_mask,
-                    latent_steps=k_for_agent,
-                    past_key_values=past_kv,
-                )
+                if self.latent_in_producer_turn:
+                    # Capture the latent vectors (input-embedding space) so the
+                    # producer can re-forward them inside its own assistant turn.
+                    # Keep the LAST non-producer's vectors (matches --latent_only,
+                    # whose KV truncation keeps only the last agent's K positions).
+                    past_kv, latent_vecs = self.model.generate_latent_batch(
+                        wrapped_ids,
+                        attention_mask=wrapped_mask,
+                        latent_steps=k_for_agent,
+                        past_key_values=past_kv,
+                        return_latent_vecs=True,
+                    )
+                    self._producer_latent_vecs = latent_vecs
+                else:
+                    past_kv = self.model.generate_latent_batch(
+                        wrapped_ids,
+                        attention_mask=wrapped_mask,
+                        latent_steps=k_for_agent,
+                        past_key_values=past_kv,
+                    )
                 if self.sequential_info_only or self.latent_only:
                     new_past_len = _past_length(past_kv)
                     tokens_added = new_past_len - prev_past_len
@@ -339,15 +361,30 @@ class LatentMASMethod:
                 for ids_row, mask_row in zip(judger_ids, judger_mask):
                     active_ids = ids_row[mask_row.bool()].tolist()
                     judger_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
-                generated_batch, _ = self.model.generate_text_batch(
-                    judger_ids,
-                    judger_mask,
-                    max_new_tokens=self.judger_max_new_tokens,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    past_key_values=past_for_decoding,
-                    do_sample=not bool(getattr(self.args, "greedy", False)),
-                )
+                if self.latent_in_producer_turn and self._producer_latent_vecs is not None:
+                    # #3 structural: place the latent vectors INSIDE this assistant
+                    # turn (after <|im_start|>assistant\n) instead of prepending them
+                    # as KV. The producer prompt is prefilled fresh (no latent KV in
+                    # its past), with the latent re-forwarded at positions [P, P+K).
+                    generated_batch, _ = self.model.generate_text_with_latent_suffix_batch(
+                        judger_ids,
+                        judger_mask,
+                        self._producer_latent_vecs,
+                        max_new_tokens=self.judger_max_new_tokens,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                        do_sample=not bool(getattr(self.args, "greedy", False)),
+                    )
+                else:
+                    generated_batch, _ = self.model.generate_text_batch(
+                        judger_ids,
+                        judger_mask,
+                        max_new_tokens=self.judger_max_new_tokens,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                        past_key_values=past_for_decoding,
+                        do_sample=not bool(getattr(self.args, "greedy", False)),
+                    )
                 for idx in range(batch_size):
                     final_text = generated_batch[idx].strip()
                     final_texts[idx] = final_text

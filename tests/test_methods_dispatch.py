@@ -48,6 +48,44 @@ class TestLatentMasRunBatchSequential:
             assert r["agents"][-1]["role"] == "judger"
 
 
+class TestLatentInProducerTurn:
+    def test_structural_placement_runs(self, tiny_args, tiny_model_wrapper):
+        from methods.latent_mas import LatentMASMethod
+        args = copy.copy(tiny_args)
+        args.method = "latent_mas"
+        args.task = "gsm8k"
+        args.latent_steps = 2
+        args.pipeline = "planner,judger"  # 1 non-producer + producer
+        args.latent_in_producer_turn = True
+        method = LatentMASMethod(
+            tiny_model_wrapper, latent_steps=2, judger_max_new_tokens=8,
+            generate_bs=2, args=args,
+        )
+        results = method.run_batch(_items())
+        assert len(results) == 2
+        # The producer captured the upstream agent's latent vectors [B, K, D].
+        assert method._producer_latent_vecs is not None
+        assert method._producer_latent_vecs.shape[1] == 2  # K
+        for r in results:
+            assert len(r["agents"]) == 2
+            assert "prediction" in r and "correct" in r
+
+    def test_off_by_default(self, tiny_args, tiny_model_wrapper):
+        from methods.latent_mas import LatentMASMethod
+        args = copy.copy(tiny_args)
+        args.method = "latent_mas"
+        args.pipeline = "planner,judger"
+        method = LatentMASMethod(
+            tiny_model_wrapper, latent_steps=2, judger_max_new_tokens=8,
+            generate_bs=2, args=args,
+        )
+        assert method.latent_in_producer_turn is False
+        results = method.run_batch(_items())
+        # Standard path leaves the structural-capture slot untouched.
+        assert method._producer_latent_vecs is None
+        assert len(results) == 2
+
+
 class TestLatentMasRunBatchParallel:
     def test_parallel_branch_runs(self, tiny_args, tiny_model_wrapper):
         from methods.latent_mas import LatentMASMethod

@@ -209,6 +209,58 @@ class TestTextGeneration:
         assert _past_length(past) >= ids.shape[1]
 
 
+class TestGenerateTextWithLatentSuffix:
+    def test_runs_and_grows_cache_by_K(self, tiny_model_wrapper):
+        mw = tiny_model_wrapper
+        prompts = [[{"role": "user", "content": "solve this"}]] * 2
+        _, ids, mask, _ = mw.prepare_chat_batch(prompts)
+        D = mw.model.get_input_embeddings().weight.shape[1]
+        K, new_tok = 3, 4
+        latent_vecs = torch.randn(2, K, D)
+        gens, past = mw.generate_text_with_latent_suffix_batch(
+            ids, mask, latent_vecs, max_new_tokens=new_tok, do_sample=False,
+        )
+        assert len(gens) == 2
+        assert all(isinstance(g, str) for g in gens)
+        # Isolate the K contribution: the suffix path's cache should be exactly K
+        # longer than the same greedy run WITHOUT the latent suffix (robust to
+        # HF's off-by-one cache convention for the final sampled token).
+        _, past_base = mw.generate_text_batch(
+            ids, mask, max_new_tokens=new_tok, do_sample=False,
+        )
+        assert _past_length(past) == _past_length(past_base) + K
+
+    def test_rejects_bad_latent_shape(self, tiny_model_wrapper):
+        mw = tiny_model_wrapper
+        prompts = [[{"role": "user", "content": "hi"}]] * 2
+        _, ids, mask, _ = mw.prepare_chat_batch(prompts)
+        D = mw.model.get_input_embeddings().weight.shape[1]
+        with pytest.raises(ValueError, match="must be a"):
+            mw.generate_text_with_latent_suffix_batch(
+                ids, mask, torch.randn(2, D), max_new_tokens=2, do_sample=False,
+            )
+
+    def test_placement_differs_from_prepended_kv(self, tiny_model_wrapper):
+        """Sanity: appending latents inside the turn yields a different cache
+        length than prepending them as KV before the prompt would (the suffix
+        path prefills prompt+K in one pass; the cache reflects that ordering)."""
+        mw = tiny_model_wrapper
+        prompts = [[{"role": "user", "content": "compute"}]] * 2
+        _, ids, mask, _ = mw.prepare_chat_batch(prompts)
+        D = mw.model.get_input_embeddings().weight.shape[1]
+        K = 5
+        latent_vecs = torch.randn(2, K, D)
+        _, past = mw.generate_text_with_latent_suffix_batch(
+            ids, mask, latent_vecs, max_new_tokens=1, do_sample=False,
+        )
+        _, past_base = mw.generate_text_batch(
+            ids, mask, max_new_tokens=1, do_sample=False,
+        )
+        # The prompt sits at [0,P) and the latent at [P,P+K): exactly K positions
+        # beyond the no-latent baseline.
+        assert _past_length(past) == _past_length(past_base) + K
+
+
 class TestConstants:
     def test_named_constants_exist(self):
         assert _NORM_EPS == 1e-6

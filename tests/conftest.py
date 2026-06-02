@@ -56,6 +56,8 @@ def tiny_args():
         tensor_parallel_size=1,
         gpu_memory_utilization=0.9,
         latent_only=False,
+        latent_in_producer_turn=False,
+        greedy=False,
         sequential_info_only=False,
         # The prompts.py builders assert model_name contains "qwen". Tests
         # actually load TINY_MODEL_ID (tiny-gpt2) via the fixture, but pass
