@@ -10,9 +10,12 @@
 #     "compute,verify"     -> latent_cv  (compute loops latently, verify produces)
 #   K_VALUES sweeps the non-producer's latent steps.
 #
-# Budget: producer max_new=2048. The latent KV adds only K(<=40) tokens, but sequential
-# latent MAS re-includes the question in each agent's prompt, so worst case
-# 2*q(<=791) + overhead + K + gen(2048) ~= 3.9K < 4096 (Instruct's hard window).
+# Budget: --latent_only passes ONLY the K(<=40) latent vectors between agents (the
+# prior agent's prompt prefill — which RE-includes the question, ~hundreds of tokens —
+# is truncated from the KV). So the producer's context = its own prompt + K(<=40) + gen,
+# i.e. EXACTLY the single-agent floor (floor_instruct ran max_new=3072 and never
+# truncated) plus rounding-error latent tokens. max_new=3072 to match floor exactly.
+# Worst case: K(40) + producer_prompt(<=~1000) + gen(3072) ~= 4.0K < 4096.
 # Feedback mode auto -> w_a (Qwen2.5-Math is UNTIED). Paper-faithful defaults:
 # --latent_space_realign, --latent_norm_mode scalar_mean.
 #
@@ -41,7 +44,7 @@ SUBSET="${SUBSET:-train}"
 LEVELS="${LEVELS:-4,5}"
 TRAIN_SIZE="${TRAIN_SIZE:-131}"
 TEST_SIZE="${TEST_SIZE:-131}"
-MAX_NEW="${MAX_NEW:-2048}"      # producer decode budget (see header)
+MAX_NEW="${MAX_NEW:-3072}"      # = floor_instruct's budget; --latent_only keeps it (see header)
 BS="${BS:-2}"
 K_VALUES="${K_VALUES:-5 10 20 40}"
 OUT=/home/bill/src/LatentMAS/results/math500_${NAME}
@@ -56,7 +59,7 @@ for k in $K_VALUES; do
         --train_size "$TRAIN_SIZE" --test_size "$TEST_SIZE" \
         --max_samples "$N" --max_new_tokens "$MAX_NEW" --generate_bs "$BS" \
         --model_name "$MODEL" --method latent_mas --seed 42 \
-        --prompt sequential --pipeline "$PIPELINE" --latent_steps "$k" \
+        --prompt sequential --pipeline "$PIPELINE" --latent_steps "$k" --latent_only \
         --latent_feedback_mode auto --latent_space_realign --latent_norm_mode scalar_mean \
         > "$LOG" 2>&1
     JSON=$(grep -E '^\{.*accuracy' "$LOG" | tail -1)

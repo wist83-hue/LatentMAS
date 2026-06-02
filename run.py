@@ -108,6 +108,7 @@ def main():
     parser.add_argument("--split", type=str, default="test")
     parser.add_argument("--max_new_tokens", type=int, default=4096)
     parser.add_argument("--latent_steps", type=int, default=0, help="Number of latent steps for LatentMAS method (uniform across personas, unless --latent_steps_map is set)")
+    parser.add_argument("--latent_only", action="store_true", help="Pass ONLY the K latent vectors between agents (truncate each non-producer's prompt prefill from the KV, keeping just its latent steps). Makes the inter-agent transfer rounding-error-small so the producer keeps a full generation budget within the context window — for apples-to-apples comparison against the single-agent baseline.")
     parser.add_argument("--latent_steps_map", type=str, default=None, help='Per-persona latent steps, e.g. "planner:40,critic:25,refiner:10". Overrides --latent_steps for listed roles; unlisted roles fall back to --latent_steps.')
     parser.add_argument("--pipeline", type=str, default=None, help='Pipeline spec, e.g. "planner,(critic+refiner)*2,judger". Default: planner,critic,refiner,judger.')
     parser.add_argument("--latent_halt_threshold", type=float, default=0.0, help="Relative-squared-velocity threshold for adaptive latent-loop halting. 0 disables (uses fixed latent_steps).")

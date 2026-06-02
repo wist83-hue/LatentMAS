@@ -13,6 +13,39 @@ from transformers.cache_utils import Cache
 from . import TEXT_PRODUCER_ROLES
 
 
+def _rotate_half(x):
+    """Llama/Qwen2 RoPE rotate_half: split last dim in two, return [-x2, x1]."""
+    half = x.shape[-1] // 2
+    x1 = x[..., :half]
+    x2 = x[..., half:]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def _rope_inv_freq(head_dim: int, theta: float, device) -> "torch.Tensor":
+    return 1.0 / (theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=device) / head_dim))
+
+
+def _rerope_keys_shift(keys: "torch.Tensor", shift: int, head_dim: int, theta: float) -> "torch.Tensor":
+    """Re-base RoPE'd keys by -`shift` positions.
+
+    A key currently carrying rotation R(p) (rotated at position p) becomes R(p-shift):
+    we apply R(-shift) = [* cos(shift) - rotate_half(*) sin(shift)] (since cos is even,
+    sin is odd). Used after truncating a KV cache to its last K entries — those keys were
+    rotated at positions [shift, shift+K) but the truncated cache reports length K, so we
+    re-base them to [0, K). RoPE applies to keys only (values are untouched).
+
+    `keys` shape: [batch, n_kv_heads, K, head_dim]. shift == 0 is a no-op.
+    """
+    if shift == 0:
+        return keys
+    inv_freq = _rope_inv_freq(head_dim, theta, keys.device)
+    ang = float(shift) * inv_freq               # [head_dim/2]
+    emb = torch.cat([ang, ang], dim=-1)         # [head_dim]
+    cos = emb.cos().to(keys.dtype)
+    sin = emb.sin().to(keys.dtype)
+    return keys * cos - _rotate_half(keys) * sin
+
+
 class LatentMASMethod:
     def __init__(
         self,
@@ -91,7 +124,12 @@ class LatentMASMethod:
     def _truncate_past(self, past_kv: Optional[Cache], tokens_to_keep: int) -> Optional[Cache]:
         """Truncate `past_kv` to the last `tokens_to_keep` positions, returning a copy.
 
-        We copy first so the original cache is preserved for the caller.
+        We copy first so the original cache is preserved for the caller. The kept keys
+        carried RoPE rotation at their ORIGINAL positions [start, cur); since the
+        truncated cache now reports length `tokens_to_keep`, the next prefill is
+        positioned from that length, so we MUST re-base the kept keys to positions
+        [0, tokens_to_keep) (rotate by -start) or RoPE relative-positions are corrupted
+        — empirically derails the producer decode (Pred=None). Keys only (RoPE skips V).
         """
         if past_kv is None or tokens_to_keep <= 0:
             return None
@@ -99,13 +137,31 @@ class LatentMASMethod:
         cur = copied.get_seq_length()
         if cur <= tokens_to_keep:
             return copied
-        # Keep the LAST `tokens_to_keep` positions
+        # Keep the LAST `tokens_to_keep` positions, then RE-BASE their RoPE rotation to
+        # positions [0, tokens_to_keep): the kept keys were rotated at [start, cur), but
+        # the truncated cache reports length tokens_to_keep so the next prefill positions
+        # from there — without re-basing, RoPE relative-positions are corrupted (silent).
         start = cur - tokens_to_keep
+        head_dim, theta = self._rope_geom()
         for layer in copied.layers:
             if layer.is_initialized:
-                layer.keys = layer.keys[..., start:, :].contiguous()
+                k = layer.keys[..., start:, :].contiguous()
+                if head_dim is not None:
+                    k = _rerope_keys_shift(k, start, head_dim, theta).contiguous()
+                layer.keys = k
                 layer.values = layer.values[..., start:, :].contiguous()
         return copied
+
+    def _rope_geom(self):
+        """(head_dim, rope_theta) for the loaded model, or (None, _) if undeterminable
+        (re-roping is then skipped — caller must treat that as a hard error for latent_only)."""
+        try:
+            cfg = self.model.model.config
+            head_dim = getattr(cfg, "head_dim", None) or (cfg.hidden_size // cfg.num_attention_heads)
+            theta = float(getattr(cfg, "rope_theta", 10000.0))
+            return int(head_dim), theta
+        except Exception:
+            return None, 10000.0
 
     @torch.no_grad()
     def run_batch(self, items: List[Dict]) -> List[Dict]:
