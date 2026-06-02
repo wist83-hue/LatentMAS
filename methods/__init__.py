@@ -28,6 +28,9 @@ _DEFAULT_NAMES = {
     "strategize": "Strategist",
     "compute": "Calculator",
     "verify": "Verifier",
+    # 'solve' uses the EXACT single-agent baseline prompt (no latent reference) — for
+    # a strategize->solve DAG that tests whether the producer uses latent KV unprompted.
+    "solve": "Solver",
 }
 
 # Closed set: each role must have a prompt template in prompts.py. Adding a

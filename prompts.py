@@ -49,7 +49,7 @@ def _apply_minimal(role: str, question: str, args, original: str) -> str:
     return _minimal_prompt(question)
 
 
-def build_agent_message_sequential_latent_mas(role: str, question: str, context: str = "", method=None, args=None):
+def build_agent_message_sequential_latent_mas(role: str, question: str, context: str = "", method=None, args=None, is_producer: bool = False, is_first: bool = False):
 
     system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
 
@@ -159,35 +159,59 @@ Now, reason step by step and output the final answer inside \\boxed{{YOUR_FINAL_
         else:
             raise NotImplementedError(f"Task {args.task} not implemented in v5 judger prompt.")
 
-    # --- Math persona set: strategize -> compute -> verify ---
-    # strategize/compute do latent steps (no text emitted); verify is the
-    # text-producer (TEXT_PRODUCER_ROLES) that emits the final \boxed answer.
+    # --- Math persona set: strategize -> compute -> verify (latent looping) ---
+    # Non-producer agents do K latent steps (no text); their prompt SEEDS that latent
+    # thinking. The producer (last agent, is_producer=True) decodes the final \boxed
+    # answer, attending to the prior agents' latent KV. Position flags (is_producer,
+    # is_first) are passed by latent_mas.py since context is "" here (prior work is in
+    # the KV cache, not text).
     elif role == "strategize":
-        user_prompt = f"""You are a Strategy Agent. Given a math problem, devise a clear high-level approach: identify the key idea(s), which method or theorem to apply, and the sequence of steps needed. Do NOT carry out the arithmetic or state a final answer.
+        # latent looper: seed latent strategy-thinking (never the producer in our DAGs)
+        user_prompt = f"""You are a Strategy Agent. Think through a clear high-level approach to the problem: the key idea(s), which method or theorem applies, and the sequence of steps needed. Do NOT carry out the arithmetic or state a final answer.
 
 Question: {question}
 
-Now outline your solution strategy below:
+Think through the solution strategy:
 """
 
     elif role == "compute":
-        user_prompt = f"""You are a Computation Agent. A solution strategy for the problem is provided in latent KV representation. Execute that strategy: carry out the algebra and arithmetic step-by-step, tracking intermediate results, to work toward the answer.
+        if is_first:
+            # compute->verify DAG: compute is the first solver (no prior strategy)
+            user_prompt = f"""You are a Computation Agent. Work the problem: carry out the algebra and arithmetic step-by-step, tracking intermediate results, to reach the answer.
 
 Question: {question}
 
-Now perform the computation below:
+Work through the computation:
 """
+        else:
+            # strategize->compute DAG: a strategy is available in the latent context
+            user_prompt = f"""You are a Computation Agent. A solution strategy for this problem is available in the latent context from the prior agent. Execute it: carry out the algebra and arithmetic step-by-step, tracking intermediate results, to reach the answer.
+
+Question: {question}
+
+Work through the computation:
+"""
+        if is_producer:
+            # producer decodes the final answer (e.g. compute is last in strategize->compute)
+            user_prompt = user_prompt.rstrip() + "\n\nThen state the final answer inside \\boxed{YOUR_FINAL_ANSWER}.\n"
 
     elif role == "verify":
         user_prompt = f"""Target Question: {question}
 
-You are a Verification Agent. You are provided with latent information (a strategy and a computation for this problem) for reference; it may contain mistakes or irrelevant content. Carefully check the reasoning, correct any errors, and determine the final answer.
+You are a Verification Agent. The prior agents' work on this problem is available in the latent context for reference; it may contain mistakes or irrelevant content. Carefully check the reasoning, correct any errors, and determine the final answer.
 
 Reason step-by-step to verify and solve the Target Question, then output the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 """
 
+    elif role == "solve":
+        # IDENTICAL to the single-agent baseline (floor_instruct) prompt — deliberately
+        # NO mention of any latent/prior-agent context. As the producer it attends to the
+        # prior agent's latent KV anyway; this tests whether the model exploits that
+        # latent signal UNPROMPTED (e.g. strategize->solve).
+        user_prompt = _single_agent_user_content(question, args)
+
     user_prompt = _apply_minimal(role, question, args, user_prompt)
-    user_prompt = _apply_concise(user_prompt, role, args)
+    user_prompt = _apply_concise(user_prompt, role, args, is_producer=is_producer)
     return [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_prompt},
@@ -631,6 +655,10 @@ Work from previous agents:
 Briefly check the computation's key steps and its final result. If it is correct, confirm it; if you find a clear error, fix only what is needed — do NOT redo the whole solution from scratch. Then output the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 """
 
+    elif role == "solve":
+        # IDENTICAL to the single-agent baseline prompt (see latent builder note).
+        user_content = _single_agent_user_content(question, args)
+
     user_content = _apply_minimal(role, question, args, user_content)
     user_content = _apply_concise(user_content, role, args, is_producer=is_producer)
     return [
@@ -824,17 +852,14 @@ Your response:
     ]
 
 
-def build_agent_messages_single_agent(question: str, args=None):
-
-    system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
-
-    assert args.method in ["baseline"], "this prompt only for baseline method (single agent)"
-    assert "qwen" in args.model_name.lower(), "this prompt only for qwen models"
-
+def _single_agent_user_content(question: str, args) -> str:
+    """The exact floor/baseline single-agent user prompt (task-dependent). Shared by
+    build_agent_messages_single_agent AND the 'solve' pipeline role, so a 'solve'
+    producer's prompt is byte-identical to the single-agent baseline — with NO mention
+    of any latent/prior-agent context (tests whether the model uses latent KV unprompted)."""
     task = args.task
-
     if task in ["gsm8k", "aime2024", "aime2025", "math500"]:
-        user_content = f"""
+        return f"""
 Target Question: {question}
 
 You are a helpful assistant.
@@ -843,9 +868,8 @@ You must reason step-by-step to solve the **provided Target Question** without o
 
 Now, reason step by step and output the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 """
-
     elif task in ["arc_easy", "arc_challenge", "gpqa", "medqa"]:
-        user_content = f"""
+        return f"""
 Target Question: {question}
 
 You are a helpful assistant.
@@ -855,9 +879,8 @@ Your final answer must be selected from A,B,C,D. For example \\boxed{{A}}. Do no
 
 Now, reason step by step and output the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 """
-
     elif task in ["mbppplus", "humanevalplus"]:
-        user_content = f"""
+        return f"""
 Target Question: {question}
 
 You must put all python code as self-contained Python function(s) in markdown code blocks. For example:
@@ -869,9 +892,8 @@ def add(a, b):
 Do not add any other contents inside the markdown code block.
 Now, reason step by step and output the final answer:
 """
-
     elif task in ["winogrande"]:
-        user_content = f"""
+        return f"""
 Target Question: {question}
 
 You are a helpful assistant.
@@ -881,9 +903,8 @@ Your final answer must be selected from 1 and 2. For example \\boxed{{1}} or \\b
 
 Now, reason step by step and output the final answer inside \\boxed{{YOUR_FINAL_ANSWER}}.
 """
-
     else:
-        user_content = f"""
+        return f"""
 Question: {question}
 
 You are a helpful assistant.
@@ -892,8 +913,18 @@ You must reason step-by-step to solve the question without outputting other irre
 Present your reasoning, and then clearly state your final answer at the end.
 """
 
+
+def build_agent_messages_single_agent(question: str, args=None):
+
+    system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+
+    assert args.method in ["baseline"], "this prompt only for baseline method (single agent)"
+    assert "qwen" in args.model_name.lower(), "this prompt only for qwen models"
+
+    user_content = _single_agent_user_content(question, args)
     return [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_content},
     ]
+
 

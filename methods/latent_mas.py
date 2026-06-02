@@ -120,7 +120,14 @@ class LatentMASMethod:
         # open <think> only on the first, close </think> only before the judger.
         _nonjudger_seen = 0
 
-        for op in self.agents:
+        for op_idx, op in enumerate(self.agents):
+
+            # Producer = LAST agent in the pipeline (position-based, like text_mas):
+            # it decodes the final answer; all others contribute K latent steps. Lets a
+            # pipeline end in any role (e.g. compute in a strategize->compute DAG), not
+            # just judger/verify. is_first seeds compute's standalone-vs-executor framing.
+            is_producer = (op_idx == len(self.agents) - 1)
+            is_first = (op_idx == 0)
 
             if isinstance(op, Parallel):
                 snapshot = self._copy_past_kv(past_kv)
@@ -155,7 +162,7 @@ class LatentMASMethod:
             agent = op
             if self.args.prompt == "sequential":
                 batch_messages = [
-                    build_agent_message_sequential_latent_mas(role=agent.role, question=item["question"], context="", method=self.method_name, args=self.args)
+                    build_agent_message_sequential_latent_mas(role=agent.role, question=item["question"], context="", method=self.method_name, args=self.args, is_producer=is_producer, is_first=is_first)
                     for item in items
                 ]
             elif self.args.prompt == "hierarchical":
@@ -169,7 +176,7 @@ class LatentMASMethod:
                 batch_messages, add_generation_prompt=True
             )
 
-            if agent.role not in TEXT_PRODUCER_ROLES:
+            if not is_producer:
                 prev_past_len = _past_length(past_kv)
 
                 # --latent_thinking_brackets opens per-persona; --think also does;
