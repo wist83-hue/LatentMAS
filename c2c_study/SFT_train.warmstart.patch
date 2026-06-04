@@ -1,0 +1,21 @@
+diff --git a/script/train/SFT_train.py b/script/train/SFT_train.py
+index fbd1fb0..50e3665 100644
+--- a/script/train/SFT_train.py
++++ b/script/train/SFT_train.py
+@@ -354,7 +354,15 @@ def setup_models(model_config: Dict[str, Any], training_mode: str, device: str =
+                 **projector_params
+             )
+             projector_list.append(projector.to(device))
+-        
++
++        # Warm-start: continue training from a prior run's projector weights.
++        init_from = model_config.get("init_projectors_from")
++        if init_from:
++            for i, proj in enumerate(projector_list):
++                sd = torch.load(os.path.join(init_from, f"projector_{i}.pt"), map_location=device)
++                proj.load_state_dict(sd)
++            print(f"[warm-start] loaded {len(projector_list)} projectors from {init_from}")
++
+         # Init RosettaModel
+         K = 1
+ 

@@ -1,0 +1,14 @@
+experiment,receiver,sharer,config,mmlu_redux_micro_acc,subjects,note
+replication,Qwen3-0.6B,,Single (receiver-only),35.07,57,paper 35.53
+replication,Qwen3-0.6B,Qwen2.5-0.5B,C2C,42.70,52,paper 42.92; gain +7.63 vs paper +7.39
+identical_trajectory,Qwen3-0.6B,Qwen3-0.6B(self),50k samples,37.25,57,undertrained
+identical_trajectory,Qwen3-0.6B,Qwen3-0.6B(self),88k samples,38.17,57,
+identical_trajectory,Qwen3-0.6B,Qwen3-0.6B(self),127k samples,43.25,57,matches C2C+0.5B
+identical_trajectory,Qwen3-0.6B,Qwen3-0.6B(self),165k samples,42.84,57,plateau ~43
+sharer_ladder,Qwen3-0.6B,Qwen2.5-0.5B,C2C,42.70,52,
+sharer_ladder,Qwen3-0.6B,Qwen3-0.6B(self),C2C self-fusion (plateau),43.25,57,pure adapter
+sharer_ladder,Qwen3-0.6B,Qwen3-4B-Base,C2C,43.66,57,~= self (no real transfer)
+sharer_ladder,Qwen3-0.6B,Qwen3-4B,C2C,46.08,57,+3pp real transfer (bigger AND aligned)
+standalone,Qwen3-0.6B,,run directly,35.07,57,the little dog
+standalone,Qwen3-4B,,run directly,71.45,57,the big dog; sharering it loses ~25pp
+standalone,Qwen3-4B-Base,,run directly,1.27,57,sub-random = answer-format failure (base model)
