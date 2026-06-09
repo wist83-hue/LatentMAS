@@ -78,11 +78,15 @@ class TextMASMethod:
                 batch_messages, add_generation_prompt=True
             )
 
-            # Optional per-agent short cap for non-judger agents (for direct
-            # comparison with latent_mas argmax_embed at the same K). Greedy
-            # to match argmax_embed's argmax behavior.
+            # Optional per-agent token cap for iso-total budget comparisons.
+            # When text_mas_nonjudger_max_tokens > 0 ALL agents (including the
+            # judger/producer) are capped to that value so the four-agent total
+            # equals 4 × cap — a strict ISO-total vs the single-agent baseline.
+            # Previously only non-judger agents were capped (judger kept full
+            # max_new_tokens_each = 4096), giving a 7168-token total instead of
+            # the intended 4096.  Greedy to match argmax_embed's argmax behavior.
             short_cap = int(getattr(self.args, "text_mas_nonjudger_max_tokens", 0) or 0)
-            if short_cap > 0 and not is_producer:
+            if short_cap > 0:
                 cap = short_cap
                 use_greedy = True
             else:
