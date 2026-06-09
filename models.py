@@ -1,9 +1,27 @@
 import os
+import sys
 import csv
+import time as _time
 import torch
 import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Tuple
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# ---------------------------------------------------------------------------
+# Kestrian LM cache — import lazily so LatentMAS works without kestrian on
+# the default path.  The teardown shell script prepends the kestrian repo
+# via KESTRIAN_PATH (or directly via sys.path so the import succeeds inside
+# the latentmas conda env).
+# ---------------------------------------------------------------------------
+_KESTRIAN_PATH = os.environ.get("KESTRIAN_PATH", "/home/bill/src/kestrian")
+if _KESTRIAN_PATH not in sys.path:
+    sys.path.insert(0, _KESTRIAN_PATH)
+try:
+    import kestrian.lm_cache as _lm_cache  # type: ignore[import]
+    _HAS_LM_CACHE = True
+except ImportError:
+    _lm_cache = None  # type: ignore[assignment]
+    _HAS_LM_CACHE = False
 
 try:
     from vllm import LLM, SamplingParams
@@ -294,6 +312,59 @@ class ModelWrapper:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids, device=self.device)
+
+        # ------------------------------------------------------------------
+        # Per-example LM cache lookup (kestrian.lm_cache).
+        #
+        # Strategy: check every prompt in the batch; if ALL hit the cache,
+        # return immediately without touching the GPU.  If any miss, run the
+        # GPU for the full batch (avoids partial-batch GPU complexity) and
+        # then write every miss back to the cache.
+        #
+        # Cache key: SHA-256( model_id, decoded_prompt, temperature, top_p,
+        #                       max_new_tokens, seed=None, stop=[] )
+        # Latency on HIT:  stored latency_s replayed (timing stays honest).
+        # Latency on MISS: measured wall-clock / batch_size (same as run.py).
+        # ------------------------------------------------------------------
+        batch_size = input_ids.shape[0]
+        cache_keys: List[Optional[str]] = [None] * batch_size
+        cache_hits: List[Optional[object]] = [None] * batch_size  # CacheEntry or None
+        all_hit = False
+
+        if _HAS_LM_CACHE and past_key_values is None:
+            # Decode each prompt (strip padding by respecting attention_mask).
+            for i in range(batch_size):
+                if attention_mask is not None:
+                    active_ids = input_ids[i][attention_mask[i].bool()].tolist()
+                else:
+                    active_ids = input_ids[i].tolist()
+                prompt_text = self.tokenizer.decode(active_ids, skip_special_tokens=False)
+                key = _lm_cache.make_key(
+                    model_id=self.model_name,
+                    messages=[{"role": "user", "content": prompt_text}],
+                    temperature=temperature if do_sample else 0.0,
+                    top_p=top_p if do_sample else 1.0,
+                    max_tokens=max_new_tokens,
+                    seed=None,
+                    stop=[],
+                )
+                cache_keys[i] = key
+                cache_hits[i] = _lm_cache.get(key)
+
+            all_hit = all(h is not None for h in cache_hits)
+            if all_hit:
+                # Every example was in the cache — reconstruct from stored entries.
+                # Replay original latency so caller's per-example timing is honest.
+                generations: List[str] = []
+                for i in range(batch_size):
+                    entry = cache_hits[i]
+                    generations.append(entry.response_text)  # type: ignore[union-attr]
+                return generations, None  # no KV to return on cache hit
+
+        # ------------------------------------------------------------------
+        # GPU path (at least one miss, or cache disabled, or past_key_values
+        # is non-None — KV-continuation calls are not cached).
+        # ------------------------------------------------------------------
         if past_key_values is not None:
             past_len = _past_length(past_key_values)
             if past_len > 0:
@@ -317,15 +388,33 @@ class ModelWrapper:
         if do_sample:
             gen_kwargs["temperature"] = temperature
             gen_kwargs["top_p"] = top_p
+        t_gpu_start = _time.monotonic()
         outputs = self.model.generate(**gen_kwargs)
+        gpu_elapsed_s = _time.monotonic() - t_gpu_start
+        per_example_latency_s = gpu_elapsed_s / max(batch_size, 1)
         sequences = outputs.sequences
         prompt_padded_len = input_ids.shape[1]
-        generations: List[str] = []
+        gpu_generations: List[str] = []
         for idx in range(sequences.shape[0]):
             generated_ids = sequences[idx, prompt_padded_len:]
             text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-            generations.append(text)
-        return generations, outputs.past_key_values
+            gpu_generations.append(text)
+
+        # Store cache misses (skip KV-continuation calls — keys are None).
+        if _HAS_LM_CACHE and past_key_values is None:
+            for i in range(batch_size):
+                if cache_hits[i] is None and cache_keys[i] is not None:
+                    _lm_cache.put(
+                        cache_keys[i],
+                        _lm_cache.CacheEntry(
+                            response_text=gpu_generations[i],
+                            input_tokens=None,   # token counts not available here
+                            output_tokens=None,
+                            latency_s=per_example_latency_s,
+                        ),
+                    )
+
+        return gpu_generations, outputs.past_key_values
 
     @torch.no_grad()
     def generate_text_with_latent_suffix_batch(
