@@ -1,4 +1,7 @@
+import gc
 from typing import Dict, List
+
+import torch
 
 from . import accumulate_call_metrics, default_agents, parse_pipeline, TEXT_PRODUCER_ROLES
 from models import ModelWrapper
@@ -102,7 +105,14 @@ class TextMASMethod:
                 )
             else:
                 agent_metrics: List[Dict] = []
-                generated_texts, _ = self.model.generate_text_batch(
+                # Discard past_key_values explicitly (not just `_`) so the
+                # KV-cache tensor tuple is released before the next agent's
+                # prepare_chat_batch allocates new GPU buffers.  This is one
+                # of the two root causes of the per-example VRAM leak: without
+                # the explicit del the Python refcount stays at 1 until the
+                # name is rebound at the top of the next agent iteration,
+                # keeping up to (n_agents - 1) full KV caches live at once.
+                generated_texts, _past_kv = self.model.generate_text_batch(
                     input_ids,
                     attention_mask,
                     max_new_tokens=cap,
@@ -111,6 +121,7 @@ class TextMASMethod:
                     do_sample=not use_greedy,
                     metrics_out=agent_metrics,
                 )
+                del _past_kv  # release KV-cache GPU tensors immediately
                 # Accumulate this agent's per-example metrics (cache-honest).
                 for idx in range(batch_size):
                     if idx < len(agent_metrics):
@@ -144,6 +155,8 @@ class TextMASMethod:
                     final_texts[idx] = text_out
                 mask = attention_mask[idx].bool()
                 trimmed_ids = input_ids[idx][mask].to("cpu").tolist()
+                # NOTE: trimmed_ids is already a CPU Python list; mask is a
+                # temporary bool tensor that goes out of scope here — fine.
                 agent_traces[idx].append(
                     {
                         "name": agent.name,
@@ -154,6 +167,32 @@ class TextMASMethod:
                         "output": text_out,
                     }
                 )
+
+            # ----------------------------------------------------------------
+            # Per-agent GPU memory cleanup.
+            #
+            # Root cause of the n=1565 OOM at example 32: PyTorch's CUDA
+            # caching allocator retains freed GPU blocks in its pool rather
+            # than returning them to CUDA immediately.  With 4 agents × N
+            # examples the pool's high-water mark grows monotonically because:
+            #   (a) input_ids / attention_mask from prepare_chat_batch are GPU
+            #       tensors that stay live until the name is rebound at the top
+            #       of the next agent iteration — the last agent's tensors
+            #       persist until run_batch() returns;
+            #   (b) past_key_values from model.generate() (discarded above as
+            #       _past_kv) is a large KV-cache tuple; even after del, the
+            #       allocator holds the backing CUDA memory in its free-pool;
+            #   (c) no call to torch.cuda.empty_cache() between agents/examples
+            #       to flush the pool back to the CUDA memory manager.
+            #
+            # Fix: delete the GPU input tensors immediately after all idx
+            # post-processing is done, then flush the allocator's free-pool.
+            # This keeps peak VRAM flat (one example's working set at a time).
+            # ----------------------------------------------------------------
+            del input_ids, attention_mask
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
 
         per_example_metrics = accumulate_call_metrics(per_example_calls)
 
