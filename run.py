@@ -61,34 +61,44 @@ def process_batch(
         # --- per-example JSONL instrumentation ---
         if jsonl_fh is not None:
             agents = res.get("agents", [])
-            # input_tokens is a List[str] of token-string pieces (set by
-            # prepare_chat_batch → tokenizer.convert_ids_to_tokens). Count
-            # the list length, not sum its (non-integer) elements.
-            prompt_tokens = sum(len(a.get("input_tokens", [])) for a in agents)
-            # completion tokens: tokenize each agent's text output and sum.
-            # For latent_mas, only the judger emits text; the K=N non-judger
-            # latent passes produce empty output strings — so latent_mas's
-            # text-token count intentionally ≈ baseline (single agent).
-            # The K latent passes are NOT text tokens and are not counted here.
-            completion_tokens = 0
-            if hasattr(method, "model") and hasattr(method.model, "tokenizer"):
-                tok = method.model.tokenizer
-                for a in agents:
-                    out_text = a.get("output", "")
-                    if out_text:
-                        completion_tokens += len(tok.encode(out_text))
+            # Cache-honest path (issue #81): the method attaches a per-example
+            # `metrics` dict whose latency_s / prompt_tokens / completion_tokens /
+            # truncated are MEASURED on a cache miss and REPLAYED from the cache
+            # entry on a hit, ACCUMULATED across all of the example's agent calls
+            # (latency + completion summed, truncation OR'd). A fully-cached
+            # re-run therefore reproduces the fresh run's numbers within rounding,
+            # instead of the ~0 ms wall-clock of the cache lookups (the bug #81
+            # exists to prevent). We write those when present.
+            metrics = res.get("metrics")
+            if metrics is not None:
+                latency_s = metrics["latency_s"]
+                prompt_tokens = metrics["prompt_tokens"]
+                completion_tokens = metrics["completion_tokens"]
+                truncated = int(bool(metrics["truncated"]))
             else:
-                # fallback: rough whitespace estimate not ideal but non-blocking
-                completion_tokens = sum(len(a.get("output", "").split()) for a in agents)
+                # Fallback (e.g. vLLM path, not cache-instrumented): legacy
+                # wall-clock + heuristic truncation. NOT replayable from cache —
+                # a re-run measures fresh wall-clock here.
+                latency_s = round(per_example_latency, 4)
+                prompt_tokens = sum(len(a.get("input_tokens", [])) for a in agents)
+                completion_tokens = 0
+                if hasattr(method, "model") and hasattr(method.model, "tokenizer"):
+                    tok = method.model.tokenizer
+                    for a in agents:
+                        out_text = a.get("output", "")
+                        if out_text:
+                            completion_tokens += len(tok.encode(out_text))
+                else:
+                    completion_tokens = sum(len(a.get("output", "").split()) for a in agents)
+                truncated = int(completion_tokens >= args.max_new_tokens)
             record = {
                 "idx": batch_start + offset,
                 "correct": int(bool(res.get("correct", False))),
-                "latency_s": round(per_example_latency, 4),
+                "latency_s": round(float(latency_s), 4),
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
-                # Truncation visibility: 1 if any agent hit the token budget,
-                # 0 otherwise. Used by the ship/kill truncation-confound gate.
-                "truncated": int(completion_tokens >= args.max_new_tokens),
+                # Truncation visibility: used by the ship/kill truncation-confound gate.
+                "truncated": truncated,
                 "max_new_tokens": args.max_new_tokens,
             }
             jsonl_fh.write(json.dumps(record, ensure_ascii=False) + "\n")

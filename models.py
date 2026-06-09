@@ -307,7 +307,24 @@ class ModelWrapper:
         top_p: float = 0.95,
         past_key_values: Optional[Tuple] = None,
         do_sample: bool = True,
+        metrics_out: Optional[List[dict]] = None,
     ) -> Tuple[List[str], Optional[Tuple]]:
+        """Generate text for a batch of prompts.
+
+        Cache-honest measurement (issue #81): when ``metrics_out`` is supplied it
+        is filled with one dict per batch example::
+
+            {"latency_s": float, "prompt_tokens": int, "completion_tokens": int,
+             "truncated": bool, "finish_reason": str}
+
+        These are MEASURED on a cache miss and REPLAYED from the stored cache
+        entry on a hit — so a fully-cached re-run reproduces the original miss
+        run's per-example latency/token/truncation numbers exactly, instead of
+        the ~0 ms wall-clock of a cache lookup.  KV-continuation passes
+        (``past_key_values is not None``) legitimately bypass the cache; their
+        real GPU time is still measured and surfaced so it counts toward the
+        example's latency as before.
+        """
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
         if attention_mask is None:
@@ -354,11 +371,22 @@ class ModelWrapper:
             all_hit = all(h is not None for h in cache_hits)
             if all_hit:
                 # Every example was in the cache — reconstruct from stored entries.
-                # Replay original latency so caller's per-example timing is honest.
+                # Replay ALL measured fields (latency, tokens, truncation) so the
+                # caller's per-example record is identical to the original miss.
                 generations: List[str] = []
                 for i in range(batch_size):
                     entry = cache_hits[i]
                     generations.append(entry.response_text)  # type: ignore[union-attr]
+                    if metrics_out is not None:
+                        metrics_out.append(
+                            {
+                                "latency_s": float(entry.latency_s),  # type: ignore[union-attr,arg-type]
+                                "prompt_tokens": int(entry.input_tokens or 0),  # type: ignore[union-attr]
+                                "completion_tokens": int(entry.output_tokens or 0),  # type: ignore[union-attr]
+                                "truncated": bool(entry.truncated),  # type: ignore[union-attr]
+                                "finish_reason": entry.finish_reason or "stop",  # type: ignore[union-attr]
+                            }
+                        )
                 return generations, None  # no KV to return on cache hit
 
         # ------------------------------------------------------------------
@@ -394,13 +422,34 @@ class ModelWrapper:
         per_example_latency_s = gpu_elapsed_s / max(batch_size, 1)
         sequences = outputs.sequences
         prompt_padded_len = input_ids.shape[1]
+        eos_id = self.tokenizer.eos_token_id
+        pad_id = self.tokenizer.pad_token_id
         gpu_generations: List[str] = []
+        gpu_completion_tokens: List[int] = []
+        gpu_truncated: List[bool] = []
         for idx in range(sequences.shape[0]):
             generated_ids = sequences[idx, prompt_padded_len:]
             text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
             gpu_generations.append(text)
+            # Count real completion tokens (exclude trailing pad), and decide
+            # truncation: a sequence that never emitted EOS hit the token budget.
+            gen_list = generated_ids.tolist()
+            real = [t for t in gen_list if t != pad_id] if pad_id is not None else gen_list
+            n_completion = len(real)
+            emitted_eos = eos_id is not None and eos_id in gen_list
+            gpu_completion_tokens.append(n_completion)
+            gpu_truncated.append(not emitted_eos and n_completion >= max_new_tokens)
 
-        # Store cache misses (skip KV-continuation calls — keys are None).
+        # Per-example prompt token counts (active, padding-stripped).
+        gpu_prompt_tokens: List[int] = []
+        for i in range(batch_size):
+            if attention_mask is not None:
+                gpu_prompt_tokens.append(int(attention_mask[i].sum().item()))
+            else:
+                gpu_prompt_tokens.append(int(input_ids.shape[1]))
+
+        # Store cache misses (skip KV-continuation calls — keys are None) with the
+        # COMPLETE record so a future hit replays every field faithfully.
         if _HAS_LM_CACHE and past_key_values is None:
             for i in range(batch_size):
                 if cache_hits[i] is None and cache_keys[i] is not None:
@@ -408,10 +457,40 @@ class ModelWrapper:
                         cache_keys[i],
                         _lm_cache.CacheEntry(
                             response_text=gpu_generations[i],
-                            input_tokens=None,   # token counts not available here
-                            output_tokens=None,
+                            input_tokens=gpu_prompt_tokens[i],
+                            output_tokens=gpu_completion_tokens[i],
                             latency_s=per_example_latency_s,
+                            truncated=gpu_truncated[i],
+                            finish_reason="length" if gpu_truncated[i] else "stop",
                         ),
+                    )
+
+        # Surface per-example metrics: replay stored values for any example that
+        # hit the cache in a mixed batch, otherwise the freshly measured values.
+        # KV-continuation passes (cache bypassed) always report measured values —
+        # their real GPU time legitimately counts toward the example latency.
+        if metrics_out is not None:
+            for i in range(batch_size):
+                hit = cache_hits[i]
+                if hit is not None:
+                    metrics_out.append(
+                        {
+                            "latency_s": float(hit.latency_s),  # type: ignore[union-attr,arg-type]
+                            "prompt_tokens": int(hit.input_tokens or 0),  # type: ignore[union-attr]
+                            "completion_tokens": int(hit.output_tokens or 0),  # type: ignore[union-attr]
+                            "truncated": bool(hit.truncated),  # type: ignore[union-attr]
+                            "finish_reason": hit.finish_reason or "stop",  # type: ignore[union-attr]
+                        }
+                    )
+                else:
+                    metrics_out.append(
+                        {
+                            "latency_s": per_example_latency_s,
+                            "prompt_tokens": gpu_prompt_tokens[i],
+                            "completion_tokens": gpu_completion_tokens[i],
+                            "truncated": gpu_truncated[i],
+                            "finish_reason": "length" if gpu_truncated[i] else "stop",
+                        }
                     )
 
         return gpu_generations, outputs.past_key_values

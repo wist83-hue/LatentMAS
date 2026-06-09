@@ -1,4 +1,6 @@
 """Tests for models.py: ModelWrapper, latent loop, stitch, copy/truncate, halt."""
+from unittest.mock import patch
+
 import pytest
 import torch
 
@@ -265,3 +267,84 @@ class TestConstants:
     def test_named_constants_exist(self):
         assert _NORM_EPS == 1e-6
         assert _W_A_RIDGE_LAMBDA == 1e-5
+
+
+class TestGoldenCacheReplay:
+    """GOLDEN (issue #81): a fully-cached re-run reproduces the miss run's
+    per-example metrics EXACTLY (latency_s, prompt_tokens, completion_tokens,
+    truncated, finish_reason).
+
+    Pass 1 (MISS): model.generate is mocked to return a known sequence; the
+    wall clock is patched to advance by a known delta — these measured metrics
+    are stored complete in a temp cache.
+    Pass 2 (HIT): model.generate is patched to RAISE — so reaching the
+    assertions proves the second pass is served entirely from cache — and the
+    reconstructed metrics are asserted identical to pass 1. This FAILS if a
+    future change drops any field on the hit path.
+    """
+
+    def test_fully_cached_rerun_reproduces_metrics(self, tiny_model_wrapper, tmp_path, monkeypatch):
+        import models as _models  # noqa: PLC0415
+
+        if not _models._HAS_LM_CACHE:
+            pytest.skip("kestrian.lm_cache not importable in this environment")
+
+        mw = tiny_model_wrapper
+        monkeypatch.setenv("KESTRIAN_LM_CACHE", str(tmp_path / "golden-lm.sqlite"))
+        monkeypatch.delenv("KESTRIAN_LM_CACHE_DISABLE", raising=False)
+
+        prompts = [[{"role": "user", "content": "golden prompt"}]]
+        _, ids, mask, _ = mw.prepare_chat_batch(prompts)
+
+        prompt_len = ids.shape[1]
+        # A generated continuation that does NOT contain EOS and is long enough
+        # to count as truncated at this small max_new_tokens.
+        new_tokens = 4
+        eos = mw.tokenizer.eos_token_id
+        non_eos = 5 if eos != 5 else 6
+        gen_tail = torch.tensor([[non_eos] * new_tokens])
+        full_seq = torch.cat([ids, gen_tail], dim=1)
+
+        class _Out:
+            sequences = full_seq
+            past_key_values = None
+
+        # Deterministic clock: each monotonic() call advances by 0.5 s, so the
+        # single generate() spans exactly 1.0 s of "wall clock".
+        ticks = iter([10.0, 11.0, 100.0, 200.0, 300.0])
+        monkeypatch.setattr(_models._time, "monotonic", lambda: next(ticks))
+
+        miss_metrics = []
+        with patch.object(mw.model, "generate", return_value=_Out()) as gen_mock:
+            gens_miss, _ = mw.generate_text_batch(
+                ids, mask, max_new_tokens=new_tokens, do_sample=False, metrics_out=miss_metrics,
+            )
+        assert gen_mock.called
+        assert len(miss_metrics) == 1
+        m_miss = miss_metrics[0]
+        # Truncation: never emitted EOS and hit the budget.
+        assert m_miss["truncated"] is True
+        assert m_miss["finish_reason"] == "length"
+        assert m_miss["completion_tokens"] == new_tokens
+        assert m_miss["prompt_tokens"] == int(mask.sum().item())
+        assert m_miss["latency_s"] == pytest.approx(1.0)
+
+        # Pass 2: generate MUST NOT be called — fully served from cache.
+        def _boom(*_a, **_k):
+            raise AssertionError("model.generate must NOT run on a full cache hit")
+
+        hit_metrics = []
+        with patch.object(mw.model, "generate", side_effect=_boom):
+            gens_hit, kv_hit = mw.generate_text_batch(
+                ids, mask, max_new_tokens=new_tokens, do_sample=False, metrics_out=hit_metrics,
+            )
+
+        assert kv_hit is None  # no KV on a hit
+        assert gens_hit == gens_miss
+        assert len(hit_metrics) == 1
+        # Every measured field is replayed identically.
+        assert hit_metrics[0]["latency_s"] == pytest.approx(m_miss["latency_s"])
+        assert hit_metrics[0]["prompt_tokens"] == m_miss["prompt_tokens"]
+        assert hit_metrics[0]["completion_tokens"] == m_miss["completion_tokens"]
+        assert hit_metrics[0]["truncated"] == m_miss["truncated"] is True
+        assert hit_metrics[0]["finish_reason"] == m_miss["finish_reason"] == "length"

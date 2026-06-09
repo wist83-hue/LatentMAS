@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional, Tuple
 
-from . import default_agents, parse_pipeline, Agent, Parallel
+from . import accumulate_call_metrics, default_agents, parse_pipeline, Agent, Parallel
 from models import ModelWrapper, _past_length
 from prompts import build_agent_message_sequential_latent_mas, build_agent_message_hierarchical_latent_mas
 from utils import score_gsm8k, score_aime, score_math, extract_markdown_python_block, run_with_timeout
@@ -180,6 +180,12 @@ class LatentMASMethod:
         past_kv: Optional[Tuple] = None
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
+        # Per-example list of per-call metric dicts (anchor gens + judger gen),
+        # accumulated for the cache-honest per-example record.  The K latent
+        # KV-continuation steps bypass the cache (stateful) and emit no text;
+        # their real GPU time is part of the example latency as today and is not
+        # double-counted here.
+        per_example_calls: List[List[Dict]] = [[] for _ in range(batch_size)]
         # Track non-judger persona count for --latent_thinking_brackets_global:
         # open <think> only on the first, close </think> only before the judger.
         _nonjudger_seen = 0
@@ -308,6 +314,7 @@ class LatentMASMethod:
                 if anchor_tokens > 0 and past_kv is not None:
                     seed_ids = wrapped_ids[:, -1:]
                     seed_mask = torch.ones_like(seed_ids)
+                    anchor_metrics: List[Dict] = []
                     anchor_texts, past_kv = self.model.generate_text_batch(
                         seed_ids,
                         attention_mask=seed_mask,
@@ -315,7 +322,13 @@ class LatentMASMethod:
                         temperature=self.temperature,
                         top_p=self.top_p,
                         past_key_values=past_kv,
+                        metrics_out=anchor_metrics,
                     )
+                    # KV-continuation pass (cache bypassed): real GPU time counts
+                    # toward the example latency, accumulated like any other call.
+                    for idx in range(batch_size):
+                        if idx < len(anchor_metrics):
+                            per_example_calls[idx].append(anchor_metrics[idx])
 
                 for idx in range(batch_size):
                     mask = wrapped_mask[idx].bool()
@@ -376,6 +389,7 @@ class LatentMASMethod:
                         do_sample=not bool(getattr(self.args, "greedy", False)),
                     )
                 else:
+                    judger_metrics: List[Dict] = []
                     generated_batch, _ = self.model.generate_text_batch(
                         judger_ids,
                         judger_mask,
@@ -384,7 +398,11 @@ class LatentMASMethod:
                         top_p=self.top_p,
                         past_key_values=past_for_decoding,
                         do_sample=not bool(getattr(self.args, "greedy", False)),
+                        metrics_out=judger_metrics,
                     )
+                    for idx in range(batch_size):
+                        if idx < len(judger_metrics):
+                            per_example_calls[idx].append(judger_metrics[idx])
                 for idx in range(batch_size):
                     final_text = generated_batch[idx].strip()
                     final_texts[idx] = final_text
@@ -401,6 +419,8 @@ class LatentMASMethod:
                         }
                     )
 
+        per_example_metrics = accumulate_call_metrics(per_example_calls)
+
         results: List[Dict] = []
         for idx, item in enumerate(items):
             final_text = final_texts[idx]
@@ -414,7 +434,7 @@ class LatentMASMethod:
                 else:
                     python_code_to_exe = pred + "\n" + gold
                     ok, error_msg = run_with_timeout(python_code_to_exe, timeout=10)
-                
+
                 print(f'=========================================')
                 print(f'Question {idx}')
                 print(f'error_msg: {error_msg}')
@@ -440,10 +460,11 @@ class LatentMASMethod:
                     "raw_prediction": final_text,
                     "agents": agent_traces[idx],
                     "correct": ok,
+                    "metrics": per_example_metrics[idx],
                 }
             )
         return results
-    
+
     def run_batch_vllm(self, items: List[Dict]) -> List[Dict]:
         if len(items) > self.generate_bs:
             raise ValueError("Batch size exceeds configured generate_bs")

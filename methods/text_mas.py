@@ -1,6 +1,6 @@
 from typing import Dict, List
 
-from . import default_agents, parse_pipeline, TEXT_PRODUCER_ROLES
+from . import accumulate_call_metrics, default_agents, parse_pipeline, TEXT_PRODUCER_ROLES
 from models import ModelWrapper
 # from prompts import build_agent_messages, build_agent_messages_v6, build_agent_messages_v6_text_mas
 from prompts import build_agent_messages_hierarchical_text_mas, build_agent_messages_sequential_text_mas
@@ -39,6 +39,8 @@ class TextMASMethod:
         history_contexts = ["" for _ in range(batch_size)]
         agent_traces: List[List[Dict]] = [[] for _ in range(batch_size)]
         final_texts = ["" for _ in range(batch_size)]
+        # Per-example list of per-agent-call metric dicts, accumulated below.
+        per_example_calls: List[List[Dict]] = [[] for _ in range(batch_size)]
 
         for agent_idx, agent in enumerate(self.agents):
 
@@ -95,6 +97,7 @@ class TextMASMethod:
                     top_p=self.top_p,
                 )
             else:
+                agent_metrics: List[Dict] = []
                 generated_texts, _ = self.model.generate_text_batch(
                     input_ids,
                     attention_mask,
@@ -102,7 +105,12 @@ class TextMASMethod:
                     temperature=self.temperature,
                     top_p=self.top_p,
                     do_sample=not use_greedy,
+                    metrics_out=agent_metrics,
                 )
+                # Accumulate this agent's per-example metrics (cache-honest).
+                for idx in range(batch_size):
+                    if idx < len(agent_metrics):
+                        per_example_calls[idx].append(agent_metrics[idx])
 
             agent_name_map_for_prompt_hierarchical = {
                 "Planner": "Math Agent",
@@ -143,10 +151,12 @@ class TextMASMethod:
                     }
                 )
 
+        per_example_metrics = accumulate_call_metrics(per_example_calls)
+
         results: List[Dict] = []
         for idx, item in enumerate(items):
             final_text = final_texts[idx]
-            
+
             if self.task in ['mbppplus', 'humanevalplus']:
                 pred = extract_markdown_python_block(final_text)
                 gold = item.get("gold", "")
@@ -184,6 +194,7 @@ class TextMASMethod:
                     "raw_prediction": final_text,
                     "agents": agent_traces[idx],
                     "correct": ok,
+                    "metrics": per_example_metrics[idx],
                 }
             )
         return results

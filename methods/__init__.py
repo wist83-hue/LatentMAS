@@ -1,6 +1,34 @@
 import re
 from dataclasses import dataclass, field
-from typing import List, Union
+from typing import Dict, List, Union
+
+
+def accumulate_call_metrics(per_example: List[List[Dict]]) -> List[Dict]:
+    """Roll a method's per-agent-call metrics into one cache-honest record/example.
+
+    ``per_example[i]`` is the list of per-call metric dicts (from
+    ModelWrapper.generate_text_batch's ``metrics_out``) for example ``i`` across
+    ALL of that method's model calls (agent steps, anchor gens, judger gen, …).
+    We SUM latency_s and completion_tokens, take the FIRST prompt_tokens (the
+    example's own prompt), and OR-together truncated.  Because each call's
+    numbers are measured-on-miss / replayed-on-hit, a fully-cached re-run yields
+    the same accumulated totals as the original fresh run.
+    """
+    out: List[Dict] = []
+    for calls in per_example:
+        latency = sum(float(c.get("latency_s", 0.0)) for c in calls)
+        completion = sum(int(c.get("completion_tokens", 0)) for c in calls)
+        prompt = int(calls[0].get("prompt_tokens", 0)) if calls else 0
+        truncated = any(bool(c.get("truncated", False)) for c in calls)
+        out.append(
+            {
+                "latency_s": latency,
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "truncated": truncated,
+            }
+        )
+    return out
 
 
 @dataclass

@@ -1,5 +1,6 @@
 from typing import Dict, List
 
+from . import accumulate_call_metrics
 from models import ModelWrapper
 from prompts import build_agent_messages_single_agent
 from utils import score_gsm8k, score_aime, score_math, extract_markdown_python_block, run_with_timeout
@@ -38,6 +39,9 @@ class BaselineMethod:
             batch_messages, add_generation_prompt=True
         )
         
+        # Per-example metrics (latency / tokens / truncation), measured on a
+        # cache miss and replayed on a hit — see ModelWrapper.generate_text_batch.
+        call_metrics: List[Dict] = []
         if self.use_vllm:
             generated_batch = self.model.vllm_generate_text_batch(
                 prompts,
@@ -53,10 +57,17 @@ class BaselineMethod:
                 temperature=self.temperature,
                 top_p=self.top_p,
                 do_sample=not bool(getattr(self.args, "greedy", False)),
+                metrics_out=call_metrics,
             )
 
+        # One model call per example → one metric dict per example (in batch
+        # order).  Empty on the vLLM path (not cache-instrumented).
+        per_example_metrics = accumulate_call_metrics(
+            [[call_metrics[idx]] if idx < len(call_metrics) else [] for idx in range(len(items))]
+        )
+
         results: List[Dict] = []
-        
+
         for idx, item in enumerate(items):
             generated_text = generated_batch[idx]
             
@@ -107,6 +118,8 @@ class BaselineMethod:
                     "raw_prediction": generated_text,
                     "agents": [agent_trace],
                     "correct": ok,
+                    # Cache-honest, accumulated per-example measurement (issue #81).
+                    "metrics": per_example_metrics[idx],
                 }
             )
         return results
