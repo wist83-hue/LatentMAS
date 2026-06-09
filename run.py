@@ -1,5 +1,6 @@
 import argparse
 import json
+import time as _time
 from typing import Dict, List, Tuple
 
 from tqdm import tqdm
@@ -39,20 +40,60 @@ def process_batch(
     progress,
     max_samples: int,
     args: argparse.Namespace,
+    jsonl_fh=None,
 ) -> Tuple[int, List[Dict]]:
     remaining = max_samples - processed
     if remaining <= 0:
         return processed, preds
     current_batch = batch[:remaining]
-    if args.method == "latent_mas" and args.use_vllm: 
-        results = method.run_batch_vllm(current_batch) 
+    t0 = _time.monotonic()
+    if args.method == "latent_mas" and args.use_vllm:
+        results = method.run_batch_vllm(current_batch)
     else:
         results = method.run_batch(current_batch)
+    batch_elapsed = _time.monotonic() - t0
     if len(results) > remaining:
         results = results[:remaining]
+    per_example_latency = batch_elapsed / max(len(results), 1)
     batch_start = processed
     for offset, res in enumerate(results):
         preds.append(res)
+        # --- per-example JSONL instrumentation ---
+        if jsonl_fh is not None:
+            agents = res.get("agents", [])
+            # input_tokens is a List[str] of token-string pieces (set by
+            # prepare_chat_batch → tokenizer.convert_ids_to_tokens). Count
+            # the list length, not sum its (non-integer) elements.
+            prompt_tokens = sum(len(a.get("input_tokens", [])) for a in agents)
+            # completion tokens: tokenize each agent's text output and sum.
+            # For latent_mas, only the judger emits text; the K=N non-judger
+            # latent passes produce empty output strings — so latent_mas's
+            # text-token count intentionally ≈ baseline (single agent).
+            # The K latent passes are NOT text tokens and are not counted here.
+            completion_tokens = 0
+            if hasattr(method, "model") and hasattr(method.model, "tokenizer"):
+                tok = method.model.tokenizer
+                for a in agents:
+                    out_text = a.get("output", "")
+                    if out_text:
+                        completion_tokens += len(tok.encode(out_text))
+            else:
+                # fallback: rough whitespace estimate not ideal but non-blocking
+                completion_tokens = sum(len(a.get("output", "").split()) for a in agents)
+            record = {
+                "idx": batch_start + offset,
+                "correct": int(bool(res.get("correct", False))),
+                "latency_s": round(per_example_latency, 4),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                # Truncation visibility: 1 if any agent hit the token budget,
+                # 0 otherwise. Used by the ship/kill truncation-confound gate.
+                "truncated": int(completion_tokens >= args.max_new_tokens),
+                "max_new_tokens": args.max_new_tokens,
+            }
+            jsonl_fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            jsonl_fh.flush()
+        # --- end instrumentation ---
         problem_idx = batch_start + offset + 1
         print(f"\n==================== Problem #{problem_idx} ====================")
         print("Question:")
@@ -301,6 +342,8 @@ def main():
     parser.add_argument("--device2", type=str, default="cuda:1")
     parser.add_argument("--tensor_parallel_size", type=int, default=1, help="How many GPUs vLLM should shard the model across")
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.9, help="Target GPU memory utilization for vLLM")
+    parser.add_argument("--jsonl_out", type=str, default=None,
+                        help="If set, write per-example {idx,correct,latency_s,prompt_tokens,completion_tokens} JSONL to this path.")
 
     args = parser.parse_args()
 
@@ -385,39 +428,45 @@ def main():
         raise ValueError(f'no {args.task} support')
 
     if args.max_samples == -1:
-        dataset_iter = list(dataset_iter)  
+        dataset_iter = list(dataset_iter)
         args.max_samples = len(dataset_iter)
 
     progress = tqdm(total=args.max_samples)
 
-    for item in dataset_iter:
-        if processed >= args.max_samples:
-            break
-        batch.append(item)
-        if len(batch) == args.generate_bs or processed + len(batch) == args.max_samples:
+    import contextlib
+
+    jsonl_ctx = open(args.jsonl_out, "w") if args.jsonl_out else contextlib.nullcontext()
+    with jsonl_ctx as jsonl_fh:
+        for item in dataset_iter:
+            if processed >= args.max_samples:
+                break
+            batch.append(item)
+            if len(batch) == args.generate_bs or processed + len(batch) == args.max_samples:
+                processed, preds = process_batch(
+                    method,
+                    batch,
+                    processed,
+                    preds,
+                    progress,
+                    args.max_samples,
+                    args,
+                    jsonl_fh=jsonl_fh if args.jsonl_out else None,
+                )
+                batch = []
+                if processed >= args.max_samples:
+                    break
+
+        if batch and processed < args.max_samples:
             processed, preds = process_batch(
                 method,
                 batch,
                 processed,
                 preds,
                 progress,
-                args.max_samples,
-                args,
+                max_samples=args.max_samples,
+                args=args,
+                jsonl_fh=jsonl_fh if args.jsonl_out else None,
             )
-            batch = []
-            if processed >= args.max_samples:
-                break
-
-    if batch and processed < args.max_samples:
-        processed, preds = process_batch(
-            method,
-            batch,
-            processed,
-            preds,
-            progress,
-            max_samples=args.max_samples,
-            args=args,
-        )
     progress.close()
     
     total_time = time.time() - start_time
